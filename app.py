@@ -534,7 +534,7 @@ class Handler(BaseHTTPRequestHandler):
             offset = int(qs.get('offset', ['0'])[0] or 0)
             self._send(200, aggregate_all(account=account, folder=folder, force=force, limit=limit, offset=offset))
         elif path == '/api/accounts':
-            self._send(200, {'accounts': storage.list_accounts()})
+            self._send(200, {'accounts': _sanitize_accounts(storage.list_accounts())})
         elif path == '/api/folders':
             account = qs.get('account', [''])[0]
             self._send(200, {'folders': list_account_folders(account)})
@@ -619,12 +619,12 @@ class Handler(BaseHTTPRequestHandler):
 
             storage.add_account(email, password, imap_host, imap_port, imap_ssl,
                                 smtp_host, smtp_port, smtp_ssl, display_name)
-            self._send(200, {'ok': True, 'accounts': storage.list_accounts()})
+            self._send(200, {'ok': True, 'accounts': _sanitize_accounts(storage.list_accounts())})
 
         elif path == '/api/account/delete':
             email = (data.get('email') or '').strip()
             storage.delete_account(email)
-            self._send(200, {'ok': True, 'accounts': storage.list_accounts()})
+            self._send(200, {'ok': True, 'accounts': _sanitize_accounts(storage.list_accounts())})
 
         elif path == '/api/send':
             account = (data.get('account') or '').strip()
@@ -676,6 +676,16 @@ def _get_index_html():
         with open(html_path, 'r', encoding='utf-8') as f:
             _INDEX_HTML_CACHE = f.read().encode('utf-8')
     return _INDEX_HTML_CACHE
+
+
+def _sanitize_accounts(accounts):
+    """API 返回账号列表时脱敏：去掉 password 等敏感字段（授权码绝不能下发到前端）。"""
+    safe = []
+    for a in accounts:
+        a = dict(a)
+        a.pop('password', None)
+        safe.append(a)
+    return safe
 
 
 # ---------- 前端页面 ----------
