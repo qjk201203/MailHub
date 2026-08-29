@@ -11,6 +11,7 @@ import imaplib
 import email
 import base64
 import re
+import datetime
 from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime
 
@@ -115,6 +116,21 @@ class MailAccount:
         self._send_id_command()
         return True
 
+    def _quote_folder(self, folder):
+        """若文件夹名含空格或特殊字符，加引号（IMAP 要求）。已带引号则不重复加。"""
+        f = folder or ''
+        # 已是引号包裹则原样返回
+        if len(f) >= 2 and f[0] == '"' and f[-1] == '"':
+            return f
+        # 含空格 / 方括号 / 中文（非 ASCII）等需加引号
+        if any(ch in f for ch in ' [],') or any(ord(c) > 127 for c in f):
+            return '"' + f.replace('"', '\\"') + '"'
+        return f
+
+    def select_folder(self, folder, readonly=True):
+        """安全 select 文件夹（自动给含空格的文件夹名加引号）。返回 (typ, data)"""
+        return self.conn.select(self._quote_folder(folder), readonly=readonly)
+
     def list_folders(self):
         """列出邮箱文件夹，返回 [{name, raw}] 中文名正确解码"""
         typ, dat = self.conn.list()
@@ -145,7 +161,7 @@ class MailAccount:
         if not self.conn:
             return []
         try:
-            typ, dat = self.conn.select(folder, readonly=True)
+            typ, dat = self.select_folder(folder, readonly=True)
             if typ != 'OK':
                 return []
         except Exception:
@@ -158,6 +174,15 @@ class MailAccount:
         ids = data[0].split()
         # 取最新的 limit 封
         ids = ids[-limit:] if ids else []
+
+        # 未读序号集合（用于标记未读状态）
+        unseen_set = set()
+        try:
+            typ_u, data_u = self.conn.search(None, 'UNSEEN')
+            if typ_u == 'OK' and data_u and data_u[0]:
+                unseen_set = set(x.decode() for x in data_u[0].split())
+        except Exception:
+            unseen_set = set()
 
         # 轻量模式只取必要 header 字段（更快），批量 fetch 一次取多个
         if light:
@@ -185,7 +210,10 @@ class MailAccount:
                             seq = m.group(1)
                     try:
                         msg = email.message_from_bytes(bytes(raw))
-                        mails.append(self._parse(msg, seq, header_only=light))
+                        parsed = self._parse(msg, seq, header_only=light)
+                        if parsed:
+                            parsed['is_read'] = (parsed.get('uid', '') not in unseen_set)
+                            mails.append(parsed)
                     except Exception:
                         continue
         except Exception:
@@ -197,7 +225,10 @@ class MailAccount:
                         continue
                     raw = md[0][1]
                     msg = email.message_from_bytes(raw)
-                    mails.append(self._parse(msg, i, header_only=light))
+                    parsed = self._parse(msg, i, header_only=light)
+                    if parsed:
+                        parsed['is_read'] = (parsed.get('uid', '') not in unseen_set)
+                        mails.append(parsed)
                 except Exception:
                     continue
         return mails
@@ -221,7 +252,7 @@ class MailAccount:
         if not self.conn:
             return None
         try:
-            typ, dat = self.conn.select(folder, readonly=True)
+            typ, dat = self.select_folder(folder, readonly=True)
             if typ != 'OK':
                 return None
         except Exception:
@@ -233,7 +264,7 @@ class MailAccount:
         if not self.conn or not seq_list:
             return {}
         try:
-            typ, dat = self.conn.select(folder, readonly=True)
+            typ, dat = self.select_folder(folder, readonly=True)
             if typ != 'OK':
                 return {}
         except Exception:
@@ -312,7 +343,7 @@ class MailAccount:
                 else:
                     body_text = payload
 
-        # 日期（保留完整时间戳，含时区偏移；另给列表用的短格式）
+        # 日期（统一归一到 UTC，避免跨时区账号排序错乱，导致最新邮件混在列表中间）
         date_str = msg.get('Date', '')
         dt = None
         try:
@@ -320,11 +351,19 @@ class MailAccount:
         except Exception:
             dt = None
         if dt:
-            date_iso = dt.strftime('%Y-%m-%d %H:%M')          # 列表短格式
-            full_date = dt.strftime('%Y-%m-%d %H:%M:%S')       # 阅读面板时间戳(到秒)
+            # 若带时区，转到 UTC 再格式化；无时区则原样（naive）
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(datetime.timezone.utc)
+            # 排序键：纯数字时间戳（前台 string 比较等价于时间先后）
+            date_sort = dt.strftime('%Y%m%d%H%M%S')
+            # 展示：本地时间短格式（仅用于显示，不参与排序）
+            local_dt = dt.astimezone() if dt.tzinfo is not None else dt
+            date_iso = local_dt.strftime('%Y-%m-%d %H:%M')     # 列表短格式
+            full_date = local_dt.strftime('%Y-%m-%d %H:%M:%S') # 阅读面板时间戳(到秒)
         else:
             date_iso = date_str
             full_date = date_str
+            date_sort = ''
 
         # 退信识别：发件人是邮件守护进程/退回的邮件
         from_raw = _dec(msg.get('From', ''))

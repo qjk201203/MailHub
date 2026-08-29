@@ -174,6 +174,74 @@ _FOLDER_CACHE_TTL = 600  # 10 分钟
 # 后台同步状态
 _SYNC_STATUS = {'running': False, 'done': 0, 'total': 0, 'current_account': '', 'current_folder': '', 'last_error': ''}
 
+# 未读计数缓存：{account_email: {'INBOX': n, '文件夹raw': n, ...}}，后台定期刷新
+_UNREAD_CACHE = {}
+_UNREAD_UPDATED_AT = 0
+_UNREAD_REFRESHING = {'active': False, 'current': ''}
+
+
+def _refresh_unread_counts():
+    """后台线程：遍历所有账号的所有文件夹，用 STATUS 统计未读数。
+    每统计完一个文件夹立即写入 _UNREAD_CACHE（增量累加），前端轮询即可看到进度，不必等全部完成。"""
+    global _UNREAD_UPDATED_AT
+    _UNREAD_REFRESHING['active'] = True
+    for acc in storage.list_accounts():
+        email = acc['email']
+        a = MailAccount(email, acc['password'], acc['imap_host'],
+                        acc['imap_port'], acc.get('imap_ssl', 1))
+        try:
+            a.connect()
+            folders = a.list_folders()
+            # 保留旧缓存值，逐个覆盖更新（这样上一个账号的结果不会丢）
+            cnt = dict(_UNREAD_CACHE.get(email, {}))
+            _UNREAD_REFRESHING['current'] = email
+            # 只统计真实文件夹（排除「所有邮件」归档）
+            for f in folders:
+                name = f.get('name') or ''
+                if ('所有邮件' in name) or ('All Mail' in name):
+                    continue
+                raw = f['raw']
+                try:
+                    q = a._quote_folder(raw)
+                    typ, data = a.conn.status(q, '(UNSEEN)')
+                    n = 0
+                    if typ == 'OK' and data:
+                        s = data[0].decode('utf-8', 'ignore') if isinstance(data[0], bytes) else str(data[0])
+                        m = re.search(r'UNSEEN\s+(\d+)', s)
+                        n = int(m.group(1)) if m else 0
+                except Exception:
+                    n = 0
+                cnt[raw] = n
+                # 每统计完一个文件夹立即写回缓存，前端随时能看到累加进度
+                _UNREAD_CACHE[email] = dict(cnt)
+            # INBOX 兜底（若 list_folders 未包含）
+            if 'INBOX' not in cnt:
+                cnt['INBOX'] = 0
+            _UNREAD_CACHE[email] = cnt
+        except Exception:
+            # 连接失败也保留一个占位，避免前端以为该账号无数据
+            if email not in _UNREAD_CACHE:
+                _UNREAD_CACHE[email] = {'INBOX': 0}
+        finally:
+            a.logout()
+    _UNREAD_REFRESHING['active'] = False
+    _UNREAD_REFRESHING['current'] = ''
+    _UNREAD_UPDATED_AT = _time.time()
+
+
+def start_unread_refresher():
+    """启动未读计数后台刷新线程（启动时跑一次，之后每 5 分钟刷新）。"""
+    def _loop():
+        while True:
+            try:
+                _refresh_unread_counts()
+            except Exception:
+                pass
+            _time.sleep(300)
+    t = threading.Thread(target=_loop)
+    t.daemon = True
+    t.start()
+
 
 def _run_background_sync(sync_range):
     """后台同步线程：按最新→最旧顺序，批量拉正文到磁盘。
@@ -199,9 +267,9 @@ def _run_background_sync(sync_range):
                 folder_names = [f['raw'] for f in folders if not _skip_folder(f)] if folders else ['INBOX']
                 for raw_folder in folder_names:
                     folder = raw_folder
-                    # 必须 SELECT 后才能 SEARCH
+                    # 必须 SELECT 后才能 SEARCH（含空格文件夹名自动加引号）
                     try:
-                        typ_sel, _ = a.conn.select(folder, readonly=True)
+                        typ_sel, _ = a.select_folder(folder, readonly=True)
                     except Exception:
                         continue
                     if typ_sel != 'OK':
@@ -302,6 +370,26 @@ def fetch_mail_body(account_email, folder, seq_num):
             except Exception:
                 pass
         return m
+    finally:
+        a.logout()
+
+
+def mark_read(account_email, folder, seq):
+    """在 IMAP 服务器上把某封邮件标记为已读（\\Seen）。"""
+    acc = storage.get_account(account_email)
+    if not acc:
+        return False
+    a = MailAccount(acc['email'], acc['password'], acc['imap_host'], acc['imap_port'], acc.get('imap_ssl', 1))
+    try:
+        a.connect()
+        try:
+            a.select_folder(folder, readonly=False)
+        except Exception:
+            return False
+        typ, data = a.conn.store(seq, '+FLAGS', '(\\Seen)')
+        return typ == 'OK'
+    except Exception:
+        return False
     finally:
         a.logout()
 
@@ -424,6 +512,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         self.end_headers()
         self.wfile.write(body)
 
@@ -474,6 +563,14 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif path == '/api/sync/status':
             self._send(200, _SYNC_STATUS)
+        elif path == '/api/unread':
+            # 返回各账号各文件夹的未读计数（内存缓存，后台逐步累加，边遍历边可见）
+            self._send(200, {
+                'unread': _UNREAD_CACHE,
+                'updated_at': _UNREAD_UPDATED_AT,
+                'refreshing': _UNREAD_REFRESHING['active'],
+                'current': _UNREAD_REFRESHING['current'],
+            })
         else:
             self._send(404, {'error': 'not found'})
 
@@ -543,6 +640,13 @@ class Handler(BaseHTTPRequestHandler):
             start_background_sync(sync_range)
             self._send(200, {'ok': True, 'sync_range': sync_range, 'sync_status': _SYNC_STATUS})
 
+        elif path == '/api/mark_read':
+            account = (data.get('account') or '').strip()
+            folder = data.get('folder') or 'INBOX'
+            seq = str(data.get('seq') or '')
+            ok = mark_read(account, folder, seq)
+            self._send(200, {'ok': ok})
+
         else:
             self._send(404, {'error': 'not found'})
 
@@ -551,6 +655,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.send_header('Content-Length', str(len(html)))
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         self.end_headers()
         self.wfile.write(html)
 
@@ -1609,11 +1714,13 @@ switchAccount('all');
 </div>
 </body>
 </html>
+
 """
 
 
 def main():
     storage.init_db()
+    start_unread_refresher()
     server = HTTPServer(('0.0.0.0', PORT), Handler)
     print('MailHub 已启动： http://127.0.0.1:%d' % PORT)
     server.serve_forever()
