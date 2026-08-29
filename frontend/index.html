@@ -820,7 +820,7 @@ async function openMail(i){
     h=h.replace(/<head[^>]*>[\s\S]*?<\/head>/i,'');
     h=h.replace(/<body[^>]*>/i,'').replace(/<\/body>/i,'');
     h=`<!DOCTYPE html><html><head>${head}${script}</head><body>${h}</body></html>`;
-    content=`<div class="zoom-bar" id="zoomBar"><button class="zbtn" onclick="mailZoom(-0.1)">−</button><input class="zinput" id="zoomInp" type="number" value="55" min="20" max="150" onchange="mailZoomInput(this.value)"><button class="zbtn" onclick="mailZoom(0.1)">＋</button></div><div class="zoom-wrap" id="zoomWrap"><iframe id="mailFrame" style="zoom:0.55" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation allow-scripts allow-forms" srcdoc="${esc(h)}"></iframe></div>`;
+    content=`<div class="zoom-bar" id="zoomBar"><button class="zbtn" onclick="mailZoom(-0.1)">−</button><input class="zinput" id="zoomInp" type="number" value="55" min="20" max="150" onchange="mailZoomInput(this.value)"><button class="zbtn" onclick="mailZoom(0.1)">＋</button></div><div class="zoom-wrap" id="zoomWrap"><iframe id="mailFrame" style="zoom:0.55" sandbox="allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation allow-scripts allow-forms" srcdoc="${esc(h)}"></iframe></div>`;
   }else{
     content=`<div class="plain">${esc(full.text||'(无正文)')}</div>`;
   }
