@@ -195,10 +195,13 @@ def _refresh_unread_counts():
             # 保留旧缓存值，逐个覆盖更新（这样上一个账号的结果不会丢）
             cnt = dict(_UNREAD_CACHE.get(email, {}))
             _UNREAD_REFRESHING['current'] = email
-            # 只统计真实文件夹（排除「所有邮件」归档）
+            # 只统计真实文件夹（排除「所有邮件」归档 + Gmail 系统标签，避免重复和遍历过慢）
             for f in folders:
                 name = f.get('name') or ''
                 if ('所有邮件' in name) or ('All Mail' in name):
+                    continue
+                # 跳过 Gmail 的 [Google Mail] 系统标签（所有邮件/已删除/聊天/草稿/星标等，与其它标签重复）
+                if '[Google Mail]' in name:
                     continue
                 raw = f['raw']
                 try:
@@ -753,21 +756,27 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
 .drawer .who .em{font-size:12px;color:var(--muted)}
 .drawer .dbody{flex:1;overflow-y:auto;padding:8px 0}
 .drawer .sect{font-size:11px;color:var(--muted);padding:14px 16px 4px;letter-spacing:.5px}
-.drawer .item{display:flex;align-items:center;gap:13px;padding:10px 16px;cursor:pointer;color:var(--text);font-size:14px}
+.drawer .item{display:flex;align-items:center;gap:13px;padding:10px 16px;cursor:pointer;color:var(--text);font-size:14px;flex-wrap:wrap}
 .drawer .item:hover{background:var(--hover)}
 .drawer .item.active{background:var(--active);color:var(--accent);font-weight:500}
 .drawer .item .ic{width:20px;text-align:center;font-size:16px;display:flex;align-items:center;justify-content:center}
 .drawer .item .ic svg{width:18px;height:18px;fill:currentColor;flex:0 0 18px}
 .drawer .item .foldbtn svg{width:14px;height:14px;fill:currentColor}
-.drawer .item .cnt{margin-left:auto;font-size:11px;color:var(--muted)}
+.drawer .item .cnt{margin-left:0;font-size:12px;font-weight:700;color:var(--accent);flex-basis:100%;text-align:left;padding-left:33px;background:none;min-width:0;line-height:1.4}
 .drawer .item .del{margin-left:6px;color:#f44336;border:none;background:none;cursor:pointer;opacity:0;font-size:14px}
 .drawer .item .foldbtn{width:24px;height:24px;border:1px solid var(--border);background:var(--surface);color:var(--accent);border-radius:6px;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;flex:0 0 24px;font-weight:700}
 .drawer .item .foldbtn:hover{background:var(--active)}
 .drawer .item .foldbtn.folded{color:var(--muted)}
 .drawer .item:hover .del{opacity:1}
+/* 分栏拖拽手柄（桌面端左右拉调节列宽） */
+.col-resizer{position:absolute;top:0;right:-4px;bottom:0;width:8px;cursor:col-resize;z-index:12;display:none}
+.col-resizer::after{content:'';position:absolute;top:0;right:3px;bottom:0;width:2px;background:transparent;transition:background .15s}
+.col-resizer:hover::after,.col-resizer.dragging::after{background:var(--accent)}
 
 /* 邮件列表 */
 .maillist{flex:1;overflow-y:auto;background:var(--surface-2);-webkit-overflow-scrolling:touch;padding:8px}
+/* 移动端：邮件列表上方的当前文件夹名称 */
+.folder-bar{display:block;padding:10px 16px;font-size:15px;font-weight:600;color:var(--text);background:var(--surface);border-bottom:1px solid var(--border);flex:0 0 auto}
 .mailrow{display:flex;padding:var(--dense,14px) 16px;border-bottom:1px solid var(--border);cursor:pointer;gap:12px;align-items:flex-start;background:var(--surface);border-radius:12px;margin-bottom:6px;box-shadow:var(--shadow);transition:box-shadow .15s,transform .1s}
 .mailrow.unread{background:#eef4ff}
 .mailrow.unread .from{font-weight:700}
@@ -854,12 +863,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
 #pinBtn{display:none}
 @media (min-width:900px){
   #pinBtn{display:flex}
-  body{display:grid;grid-template-columns:190px 320px 1fr;grid-template-rows:56px 40px 1fr 44px;grid-template-areas:'top top top' 'drawer sort sort' 'drawer list reader' 'bottom bottom bottom'}
+  body{display:grid;grid-template-columns:var(--dw,190px) var(--lw,320px) 1fr;grid-template-rows:56px 40px 1fr 44px;grid-template-areas:'top top top' 'drawer sort sort' 'drawer list reader' 'bottom bottom bottom'}
   .topbar{grid-area:top;flex:none;height:56px}
-  .drawer{grid-area:drawer;position:static;transform:none;width:auto;max-width:none;min-width:0;height:auto;border-right:1px solid var(--border)}
+  .drawer{grid-area:drawer;position:relative;transform:none;width:auto;max-width:none;min-width:0;height:auto;border-right:1px solid var(--border)}
+  .col-resizer{display:block}
   .drawer-mask{display:none !important}
   #sortBar{grid-area:sort;display:flex;align-items:center;border-bottom:1px solid var(--border);height:40px;padding:0 12px}
-  .maillist{grid-area:list;height:auto;border-right:1px solid var(--border)}
+  .folder-bar{display:none}
+  .maillist{grid-area:list;height:auto;border-right:1px solid var(--border);position:relative}
   .reader{grid-area:reader;position:static;transform:none;display:flex;width:auto;height:auto;z-index:1}
   .fab{display:none}
   .bottombar{grid-area:bottom;flex:none;height:44px}
@@ -870,7 +881,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
 }
 /* 桌面折叠侧边栏（缩成窄条，只留 logo 入口，点 logo 展开） */
 @media (min-width:900px){
-  body.sidebar-hidden{grid-template-columns:64px 340px 1fr}
+  body.sidebar-hidden{grid-template-columns:64px var(--lw,340px) 1fr}
   body.sidebar-hidden .drawer{overflow:hidden}
   body.sidebar-hidden .dhead{flex-direction:column;gap:12px;padding:16px 0;justify-content:flex-start}
   body.sidebar-hidden .dhead .who{display:none}
@@ -993,6 +1004,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
     <button class="icon-btn" onclick="togglePinDrawer()" title="折叠/展开侧边栏" id="pinBtn"><svg><use href="#i-pin"/></svg></button>
   </div>
   <div class="dbody" id="drawerBody"></div>
+  <div class="col-resizer" id="drawerResizer" title="拖动调节宽度"></div>
 </div>
 
 <div style="display:flex;gap:4px;padding:6px 12px;border-bottom:1px solid var(--border);background:var(--surface);font-size:12px" id="sortBar">
@@ -1001,7 +1013,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
   <button class="zbtn sortbtn" data-sort="from" style="height:26px;min-width:auto;padding:0 10px" onclick="setSort('from')">发件人</button>
   <button class="zbtn sortbtn" data-sort="subject" style="height:26px;min-width:auto;padding:0 10px" onclick="setSort('subject')">主题</button>
 </div>
-<div class="maillist" id="mailList"><div class="loading">加载中…</div></div>
+<div class="folder-bar" id="folderBar">收件箱</div>
+<div class="maillist" id="mailList"><div class="col-resizer" id="listResizer" title="拖动调节宽度"></div><div class="loading">加载中…</div></div>
 <button class="fab" onclick="showSendTip()"><svg><use href="#i-edit"/></svg></button>
 
 <div class="reader" id="reader">
@@ -1124,6 +1137,7 @@ let accounts=[];
 let curAccount='all';
 let curFolder='INBOX';
 let curFolderRaw='INBOX';
+let curFolderName='收件箱';
 let mails=[];
 let foldersCache={};
 let _collapsed={};   // 记录哪些账号的文件夹被折叠
@@ -1283,12 +1297,12 @@ async function loadAccounts(){
 async function renderDrawer(){
   const el=document.getElementById('drawerBody');
   let html='<div class="sect">账户</div>';
-  html+=`<div class="item ${curAccount==='all'?'active':''}" onclick="switchAccount('all')"><span class="ic"><svg><use href="#i-inbox"/></svg></span>全部收件箱<span class="cnt">0</span></div>`;
+  html+=`<div class="item ${curAccount==='all'?'active':''}" data-agg="all" onclick="switchAccount('all')"><span class="ic"><svg><use href="#i-inbox"/></svg></span>全部收件箱</div>`;
   for(const a of accounts){
     const isA=curAccount===a.email;
     const collapsed=!!_collapsed[a.email];
-    // 账号行：带醒目的折叠箭头
-    html+=`<div class="item ${isA?'active':''}">
+    // 账号行：带醒目的折叠箭头 + 账号总未读
+    html+=`<div class="item ${isA?'active':''}" data-agg="account" data-email="${esc(a.email)}">
       <span class="ic"><svg><use href="#i-mail"/></svg></span>
       <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" onclick="switchAccount('${esc(a.email)}')">${esc(a.display_name||a.email)}</span>
       <button class="foldbtn ${collapsed?'folded':''}" onclick="toggleAccountFolders('${esc(a.email)}')" title="折叠/展开文件夹"><svg><use href="${collapsed?'#i-chev-right':'#i-chev-down'}"/></svg></button>
@@ -1303,34 +1317,62 @@ async function renderDrawer(){
     }
   }
   el.innerHTML=html;
+  paintUnreadBadges(_unreadData);
 }
 
-// 独立后处理：给侧边栏文件夹项追加未读数字。完全独立于 renderDrawer，出错只影响数字，不影响菜单/列表。
+// 未读数据缓存（避免每次重绘闪一下）
+let _unreadData=null;
+
+// 同步用缓存数据补数字（无网络往返，重绘后立即生效，无闪烁）
+function paintUnreadBadges(cache){
+  if(!cache)return;
+  const drawer=document.getElementById('drawerBody');
+  if(!drawer)return;
+  const items=drawer.querySelectorAll('.item');
+  // 先算全局总和，供「全部收件箱」用
+  let grandTotal=0;
+  for(const em in cache){
+    const c=cache[em]||{};
+    for(const k in c){grandTotal+=c[k]||0;}
+  }
+  for(let i=0;i<items.length;i++){
+    const it=items[i];
+    const agg=it.getAttribute('data-agg');
+    const em=it.getAttribute('data-email');
+    const fw=it.getAttribute('data-folder');
+    let cnt=0;
+    if(agg==='all'){
+      cnt=grandTotal;
+    }else if(agg==='account' && em){
+      const c=cache[em]||{};
+      for(const k in c){cnt+=c[k]||0;}
+    }else if(fw && em){
+      cnt=(cache[em]||{})[fw]||0;
+    }else{
+      continue;
+    }
+    let badge=it.querySelector('.uc');
+    if(cnt>0){
+      if(!badge){
+        badge=document.createElement('span');
+        badge.className='cnt uc';
+        it.appendChild(badge);
+      }
+      badge.textContent=cnt+' 封未读邮件';
+    }else if(badge){
+      badge.remove();
+    }
+  }
+}
+
+// 独立后处理：拉取未读数据并刷新数字。完全独立，出错只影响数字，不影响菜单/列表。
 async function applyUnreadBadges(){
+  // 先用缓存立即补（无闪烁），再异步拉最新
+  paintUnreadBadges(_unreadData);
   try{
     const r=await fetch('/api/unread');const d=await r.json();
-    const cache=d.unread||{};
-    const drawer=document.getElementById('drawerBody');
-    if(!drawer)return;
-    const items=drawer.querySelectorAll('.item');
-    for(let i=0;i<items.length;i++){
-      const it=items[i];
-      const em=it.getAttribute('data-email');
-      const fw=it.getAttribute('data-folder');
-      if(!em||!fw)continue;
-      const cnt=(cache[em]||{})[fw]||0;
-      let badge=it.querySelector('.uc');
-      if(cnt>0){
-        if(!badge){
-          badge=document.createElement('span');
-          badge.className='cnt uc';
-          it.appendChild(badge);
-        }
-        badge.textContent=cnt;
-      }else if(badge){
-        badge.remove();
-      }
-    }
+    _unreadData=d.unread||{};
+    paintUnreadBadges(_unreadData);
   }catch(err){}
 }
 
@@ -1343,10 +1385,11 @@ async function loadFolders(account){
 
 async function switchAccount(acct){
   curAccount=acct;curFolder='INBOX';curFolderRaw='INBOX';
+  curFolderName = '收件箱';
   resetPaging();
   closeAccDropdown();closeDrawer();
   document.getElementById('topTitle').textContent = acct==='all'?'全部收件箱':(accounts.find(x=>x.email===acct)?.display_name||acct);
-  await loadAccounts();
+  document.getElementById('folderBar').textContent = curFolderName;
   if(acct!=='all'){await loadFolders(acct);}
   renderDrawer();
   loadInbox();
@@ -1354,8 +1397,10 @@ async function switchAccount(acct){
 
 async function switchFolder(account,raw,name){
   curAccount=account;curFolder=raw;curFolderRaw=raw;
+  curFolderName=name;
   resetPaging();
   document.getElementById('topTitle').textContent=name;
+  document.getElementById('folderBar').textContent=name;
   closeDrawer();renderDrawer();loadInbox();
 }
 
@@ -1742,6 +1787,48 @@ async function delAccount(email,ev){ev&&ev.stopPropagation();if(!confirm('删除
 applyPrefs();
 loadAccounts();
 switchAccount('all');
+
+// 桌面端分栏拖拽调宽（独立、无依赖，出错不影响其他功能）
+(function(){
+  try{
+    function setupResizer(id, varName, storageKey, getW, minW, maxW){
+      const handle=document.getElementById(id);
+      if(!handle)return;
+      let active=false;
+      handle.addEventListener('mousedown',function(e){
+        if(window.innerWidth<900)return;
+        e.preventDefault();
+        active=true;
+        handle.classList.add('dragging');
+        document.body.style.userSelect='none';
+        document.body.style.cursor='col-resize';
+      });
+      document.addEventListener('mousemove',function(e){
+        if(!active)return;
+        let w=getW(e);
+        if(w<minW)w=minW;
+        if(w>maxW)w=maxW;
+        document.body.style.setProperty(varName,w+'px');
+      });
+      document.addEventListener('mouseup',function(){
+        if(!active)return;
+        active=false;
+        handle.classList.remove('dragging');
+        document.body.style.userSelect='';
+        document.body.style.cursor='';
+        try{localStorage.setItem(storageKey, document.body.style.getPropertyValue(varName).trim());}catch(err){}
+      });
+      // 恢复记忆宽度
+      try{
+        const v=localStorage.getItem(storageKey);
+        if(v&&/^\d+(\.\d+)?px$/.test(v))document.body.style.setProperty(varName,v);
+      }catch(err){}
+    }
+    function dw(){ const v=document.body.style.getPropertyValue('--dw'); return v?parseFloat(v):190; }
+    setupResizer('drawerResizer','--dw','mh_drawer_w',function(e){return e.clientX;},150,520);
+    setupResizer('listResizer','--lw','mh_list_w',function(e){return e.clientX - dw();},240,600);
+  }catch(err){}
+})();
 </script>
 
 <div class="bottombar">
