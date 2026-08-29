@@ -10,6 +10,7 @@ import json
 import re
 import os
 import datetime
+import secrets
 import threading
 import urllib.request
 import ssl
@@ -29,15 +30,63 @@ from imap_client import MailAccount
 
 PORT = 20111
 
-# mihomo 代理（用于拉取 Google favicon 等被墙的资源）
-PROXY = 'http://127.0.0.1:7890'
+# 登录鉴权：设置环境变量 MAILHUB_PASSWORD 后启用（留空则无鉴权，仅适合纯内网且完全可信环境）
+AUTH_PASSWORD = os.environ.get('MAILHUB_PASSWORD', '').strip()
+AUTH_COOKIE = 'mailhub_token'
+_session_tokens = set()  # 已登录的会话 token
+
+
+def _is_authed(handler):
+    """判断请求是否已通过登录校验。未设密码则恒为 True。"""
+    if not AUTH_PASSWORD:
+        return True
+    token = ''
+    cookie_header = handler.headers.get('Cookie', '')
+    for part in cookie_header.split(';'):
+        part = part.strip()
+        if part.startswith(AUTH_COOKIE + '='):
+            token = part[len(AUTH_COOKIE) + 1:]
+    return token in _session_tokens
+
+
+LOGIN_HTML = """<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MailHub 登录</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;background:#f0f4f9;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+.card{background:#fff;padding:32px;border-radius:16px;box-shadow:0 4px 24px rgba(15,23,42,.12);width:320px}
+h1{font-size:20px;margin:0 0 20px;color:#0f172a;text-align:center}
+input{width:100%;box-sizing:border-box;padding:12px;border:1px solid #e2e8f0;border-radius:8px;font-size:15px;margin-bottom:12px}
+button{width:100%;padding:12px;background:#1a73e8;color:#fff;border:none;border-radius:8px;font-size:15px;cursor:pointer}
+.err{color:#c53929;font-size:13px;text-align:center;min-height:18px;margin-top:8px}
+</style></head><body>
+<div class="card"><h1>MailHub</h1>
+<input id="pw" type="password" placeholder="访问密码" autofocus>
+<button onclick="doLogin()">登 录</button>
+<div class="err" id="err"></div></div>
+<script>
+async function doLogin(){
+  const pw=document.getElementById('pw').value;
+  const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+  const d=await r.json();
+  if(d.ok){location.href='/';}else{document.getElementById('err').textContent=d.error||'密码错误';}
+}
+document.getElementById('pw').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
+</script>
+</body></html>"""
+
+
+# favicon 代理（用于拉取 Google favicon 等被墙资源）。
+# 通过环境变量 MAILHUB_PROXY 配置，例如 http://127.0.0.1:7890；留空则直连（favicon 失败时回退首字母头像）。
+PROXY = os.environ.get('MAILHUB_PROXY', '').strip()
 
 # favicon 内存缓存：{domain: (content_type, bytes)}
 _FAVICON_CACHE = {}
 
 
 def fetch_favicon(domain):
-    """通过 mihomo 代理拉取指定域名的 favicon，返回 (bytes, content_type) 或 None。带内存缓存，同域名只拉一次。"""
+    """拉取指定域名的 favicon，返回 (bytes, content_type) 或 None。带内存缓存，同域名只拉一次。"""
     if not domain:
         return None
     domain = domain.lower().strip()
@@ -49,8 +98,11 @@ def fetch_favicon(domain):
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     https_handler = urllib.request.HTTPSHandler(context=ctx)
-    proxy_handler = urllib.request.ProxyHandler({'http': PROXY, 'https': PROXY})
-    opener = urllib.request.build_opener(proxy_handler, https_handler)
+    if PROXY:
+        proxy_handler = urllib.request.ProxyHandler({'http': PROXY, 'https': PROXY})
+        opener = urllib.request.build_opener(proxy_handler, https_handler)
+    else:
+        opener = urllib.request.build_opener(https_handler)
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with opener.open(req, timeout=10) as resp:
@@ -520,10 +572,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _serve_login(self):
+        body = LOGIN_HTML.encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)
+        # 鉴权：未设密码则放行；已设密码但未登录 → 首页给登录页，API 返回 401
+        if AUTH_PASSWORD and not _is_authed(self):
+            if path == '/' or path == '/api/login':
+                self._serve_login()
+            else:
+                self._send(401, {'error': '未登录'})
+            return
         if path == '/':
             self._serve_index()
         elif path == '/api/inbox':
@@ -587,6 +655,30 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(raw.decode('utf-8'))
         except Exception:
             data = {}
+
+        # 登录接口：无需鉴权，校验密码后发放 session token
+        if path == '/api/login':
+            if not AUTH_PASSWORD:
+                self._send(200, {'ok': True})
+                return
+            pw = (data.get('password') or '')
+            if pw == AUTH_PASSWORD:
+                token = secrets.token_hex(16)
+                _session_tokens.add(token)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.send_header('Set-Cookie', '%s=%s; Path=/; HttpOnly; SameSite=Lax' % (AUTH_COOKIE, token))
+                self.send_header('Content-Length', '11')
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+            else:
+                self._send(401, {'ok': False, 'error': '密码错误'})
+            return
+
+        # 鉴权：未设密码则放行；已设密码但未登录 → 拒绝
+        if AUTH_PASSWORD and not _is_authed(self):
+            self._send(401, {'error': '未登录'})
+            return
 
         if path == '/api/account':
             # 添加账号

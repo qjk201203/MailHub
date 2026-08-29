@@ -73,11 +73,23 @@ python3 app.py
 
 启动后访问：`http://127.0.0.1:20111`（绑定 `0.0.0.0`，NAS 局域网内其他设备也可访问）
 
+### 环境变量
+
+| 变量 | 说明 | 默认 |
+|------|------|------|
+| `MAILHUB_PASSWORD` | 访问密码，设置后启用登录鉴权（强烈建议设置） | 空（不鉴权） |
+| `MAILHUB_PROXY` | favicon 代理地址（如 `http://127.0.0.1:7890`） | 空（直连） |
+| `MAILHUB_DATA_DIR` | 数据/数据库目录 | 脚本同目录 |
+
 ### Docker
 
 ```bash
 docker build -t mailhub .
-docker run -d -p 20111:20111 -v /你的数据目录:/app/data mailhub
+docker run -d -p 20111:20111 \
+  -v /你的数据目录:/app/data \
+  -e MAILHUB_PASSWORD=你的访问密码 \
+  -e MAILHUB_PROXY=http://127.0.0.1:7890 \
+  mailhub
 ```
 
 数据目录由环境变量 `MAILHUB_DATA_DIR` 指定（默认脚本同目录），账号数据库 `mailhub.db` 存于此。
@@ -129,8 +141,8 @@ mailhub/
    - QQ / foxmail：QQ 邮箱 → 设置 → 账户 → 生成授权码（16 位）
    - Gmail：Google 账号 → 安全性 → 应用专用密码（需先开启两步验证）
 3. **账号凭据明文存于本地 SQLite**：`mailhub.db` 以明文保存授权码，**切勿上传到公开仓库**（`.gitignore` 已排除）。请确保 NAS 文件权限安全。
-4. **单用户，无登录鉴权**：服务启动即所有人可访问（绑定 `0.0.0.0`），公网暴露需自行加反向代理鉴权 / 内网访问。
-5. **favicon 依赖代理**：拉取 Google favicon 走 `http://127.0.0.1:7890`（mihomo/clash 代理）。若代理未开，favicon 会静默回退为首字母头像，不影响邮件功能。可在 `app.py` 的 `PROXY` 变量修改。
+4. **默认无鉴权，请设置访问密码**：设置环境变量 `MAILHUB_PASSWORD` 后启用登录鉴权。若不设置，服务启动即所有人可访问（绑定 `0.0.0.0`）。公网暴露需另行配置 HTTPS 反代。
+5. **favicon 依赖代理**：拉取 Google favicon 走环境变量 `MAILHUB_PROXY` 指定的代理（如 `http://127.0.0.1:7890`，需自备 mihomo/clash）。若未设置或代理未开，favicon 会静默回退为首字母头像，不影响邮件功能。
 6. **Gmail 国际线路较慢**：首次同步 / 读取会受线路影响，正文预同步 + 磁盘缓存可缓解。163 需保持 IMAP ID 命令（已内置）。
 7. **同步范围与重复**：后台同步覆盖所有子文件夹（近一年），已排除 Gmail「所有邮件」归档避免重复。设置「关闭」即不同步。
 8. **HTTPS 未内置**：服务为纯 HTTP，密码 / 授权码在局域网明文传输，建议仅内网使用或前置 HTTPS 反代。
@@ -151,10 +163,12 @@ mailhub/
 - [x] 后台正文预同步（所有子文件夹，近一年范围可选）
 - [x] favicon（代理 + 首字母回退）
 - [x] Docker 部署
+- [x] 登录鉴权（环境变量 `MAILHUB_PASSWORD`）
+- [x] 前端抽离为独立文件（`frontend/index.html`）
 
 ### 🚧 待完善（TODO）
 - [ ] 草稿箱 —— 早期提及，尚未实现
-- [ ] 登录鉴权 / 多用户
+- [ ] 多用户（当前单密码鉴权）
 - [ ] HTTPS 支持
 - [ ] 邮件删除 / 标记已读 / 移动文件夹（IMAP 写操作互交）
 - [ ] 附件在线预览（图片缩放 / PDF）
