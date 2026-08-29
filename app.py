@@ -450,6 +450,21 @@ def mark_read(account_email, folder, seq):
         a.logout()
 
 
+def delete_mail(account_email, folder, seq):
+    """删除指定账号某文件夹里的一封邮件（\\Deleted + EXPUNGE）。"""
+    acc = storage.get_account(account_email)
+    if not acc:
+        return False
+    a = MailAccount(acc['email'], acc['password'], acc['imap_host'], acc['imap_port'], acc.get('imap_ssl', 1))
+    try:
+        a.connect()
+        return a.delete_mail(folder, seq)
+    except Exception:
+        return False
+    finally:
+        a.logout()
+
+
 def send_email(account_email, to, subject, body_html, cc='', bcc='', attachments=None):
     """用指定账号发送邮件（SMTP）。attachments: [{name, data(base64), content_type}]"""
     acc = storage.get_account(account_email)
@@ -552,9 +567,40 @@ def send_email(account_email, to, subject, body_html, cc='', bcc='', attachments
         server.login(account_email, acc['password'])
         server.sendmail(account_email, all_rcpt, msg.as_string())
         server.quit()
+
+        # 发送成功后，保存到「已发送」文件夹（APPEND）
+        try:
+            _save_to_sent(acc, msg.as_string())
+        except Exception:
+            pass  # 保存失败不影响发送结果
+
         return True, '发送成功'
     except Exception as e:
         return False, '发送失败: %s' % e
+
+
+def _save_to_sent(acc, raw_msg):
+    """把已发送的邮件 APPEND 到账号的「已发送」文件夹。失败静默。"""
+    a = MailAccount(acc['email'], acc['password'], acc['imap_host'],
+                    acc['imap_port'], acc.get('imap_ssl', 1))
+    try:
+        a.connect()
+        folders = a.list_folders()
+        sent = None
+        # 常见的「已发送」文件夹名（中文/英文/特殊）
+        for f in folders:
+            name = (f.get('name') or '').lower()
+            if name in ('已发送', '已发邮件', 'sent', 'sent items', 'sent mail'):
+                sent = f['raw']
+                break
+        if not sent:
+            # 找不到时退回 INBOX 不保存，或尝试常见 raw 名
+            return
+        a.append_message(sent, raw_msg.encode('utf-8') if isinstance(raw_msg, str) else raw_msg, flags=('Seen',))
+    except Exception:
+        pass
+    finally:
+        a.logout()
 
 
 # ---------- HTTP 处理器 ----------
@@ -741,6 +787,13 @@ class Handler(BaseHTTPRequestHandler):
             folder = data.get('folder') or 'INBOX'
             seq = str(data.get('seq') or '')
             ok = mark_read(account, folder, seq)
+            self._send(200, {'ok': ok})
+
+        elif path == '/api/mail/delete':
+            account = (data.get('account') or '').strip()
+            folder = data.get('folder') or 'INBOX'
+            seq = str(data.get('seq') or '')
+            ok = delete_mail(account, folder, seq)
             self._send(200, {'ok': ok})
 
         else:

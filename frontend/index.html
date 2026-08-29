@@ -357,6 +357,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
     <button class="text-btn" onclick="replyMail('reply')">回复</button>
     <button class="text-btn" onclick="replyMail('replyall')">全部回复</button>
     <button class="text-btn" onclick="replyMail('forward')">转发</button>
+    <button class="text-btn" onclick="deleteCurrentMail()" style="color:#c53929">删除</button>
   </div>
   <div class="rdbody" id="readerBody"><div class="loading">加载中…</div></div>
 </div>
@@ -1084,6 +1085,32 @@ async function replyMail(mode){
       fillReplyQuote(mode, full);
     }
   }catch(e){}
+}
+
+// 删除当前打开的邮件
+async function deleteCurrentMail(){
+  if(_curMailIndex<0){toast('先打开一封邮件',true);return}
+  const m=mails[_curMailIndex];
+  if(!m){toast('先打开一封邮件',true);return}
+  if(!confirm('确定删除这封邮件？'))return;
+  try{
+    const r=await fetch('/api/mail/delete',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({account:m.account, folder:m.folder||curFolder, seq:m.uid})
+    });
+    const d=await r.json();
+    if(d.ok){
+      toast('已删除');
+      closeReader();
+      // 刷新列表
+      loadInbox(true);
+    }else{
+      toast('删除失败',true);
+    }
+  }catch(e){
+    toast('删除失败',true);
+  }
 }
 
 function openAddAccount(){closeAccDropdown();closeDrawer();document.getElementById('addMask').classList.add('show')}

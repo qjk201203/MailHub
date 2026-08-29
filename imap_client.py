@@ -387,6 +387,36 @@ class MailAccount:
             'is_bounce': is_bounce,
         }
 
+    def append_message(self, folder, raw_bytes, flags=()):
+        """把一封完整邮件（RFC822 字节）APPEND 到指定文件夹（如「已发送」）。
+        返回 True/False。append 后 posix 有的服务器会自动 \Seen。"""
+        if not self.conn:
+            return False
+        try:
+            folder_q = self._quote_folder(folder) if (' ' in folder or '[' in folder) else folder
+            if flags:
+                flag_str = '(%s)' % ' '.join('\\%s' % f for f in flags)
+                typ, data = self.conn.append(folder_q, flag_str, None, raw_bytes)
+            else:
+                typ, data = self.conn.append(folder_q, None, None, raw_bytes)
+            return typ == 'OK'
+        except Exception:
+            return False
+
+    def delete_mail(self, folder, seq):
+        """删除邮件：加 \\Deleted 标记 + EXPUNGE。返回 True/False。"""
+        if not self.conn:
+            return False
+        try:
+            self.select_folder(folder, readonly=False)
+            typ, data = self.conn.store(str(seq), '+FLAGS', '(\\Deleted)')
+            if typ != 'OK':
+                return False
+            typ2, data2 = self.conn.expunge()
+            return typ2 == 'OK'
+        except Exception:
+            return False
+
     def logout(self):
         try:
             if self.conn:
