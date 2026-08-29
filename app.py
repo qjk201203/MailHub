@@ -769,6 +769,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
 /* 邮件列表 */
 .maillist{flex:1;overflow-y:auto;background:var(--surface-2);-webkit-overflow-scrolling:touch;padding:8px}
 .mailrow{display:flex;padding:var(--dense,14px) 16px;border-bottom:1px solid var(--border);cursor:pointer;gap:12px;align-items:flex-start;background:var(--surface);border-radius:12px;margin-bottom:6px;box-shadow:var(--shadow);transition:box-shadow .15s,transform .1s}
+.mailrow.unread{background:#eef4ff}
+.mailrow.unread .from{font-weight:700}
+.mailrow.unread .subject{font-weight:700}
+.mailrow .unread-dot{display:inline-block;width:8px;height:8px;background:var(--accent,#0b57d0);border-radius:50%;margin-right:6px;vertical-align:middle}
 .mailrow:hover{box-shadow:0 2px 8px rgba(15,23,42,.12)}
 .mailrow:active{background:var(--hover)}
 .mailrow .avatar{width:40px;height:40px;border-radius:50%;background:var(--avatar-bg);color:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:500;flex:0 0 40px;font-size:16px;overflow:hidden}
@@ -1267,10 +1271,12 @@ async function loadAccounts(){
   }
   el.innerHTML=html;
   renderDrawer();
+  applyUnreadBadges();
   // 文件夹后台懒加载（不阻塞页面显示），加载完再补渲染
   accounts.forEach(async function(a){
     await loadFolders(a.email);
     renderDrawer();
+    applyUnreadBadges();
   });
 }
 
@@ -1292,11 +1298,40 @@ async function renderDrawer(){
     if(!collapsed && flds.length>0){
       for(const f of flds){
         const isF=(curAccount===a.email && curFolderRaw===f.raw);
-        html+=`<div class="item ${isF?'active':''}" style="padding-left:34px" onclick="switchFolder('${esc(a.email)}','${esc(f.raw)}','${esc(f.name)}')"><span class="ic"><svg><use href="#i-folder"/></svg></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.name)}</span></div>`;
+        html+=`<div class="item ${isF?'active':''}" style="padding-left:34px" data-email="${esc(a.email)}" data-folder="${esc(f.raw)}" onclick="switchFolder('${esc(a.email)}','${esc(f.raw)}','${esc(f.name)}')"><span class="ic"><svg><use href="#i-folder"/></svg></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.name)}</span></div>`;
       }
     }
   }
   el.innerHTML=html;
+}
+
+// 独立后处理：给侧边栏文件夹项追加未读数字。完全独立于 renderDrawer，出错只影响数字，不影响菜单/列表。
+async function applyUnreadBadges(){
+  try{
+    const r=await fetch('/api/unread');const d=await r.json();
+    const cache=d.unread||{};
+    const drawer=document.getElementById('drawerBody');
+    if(!drawer)return;
+    const items=drawer.querySelectorAll('.item');
+    for(let i=0;i<items.length;i++){
+      const it=items[i];
+      const em=it.getAttribute('data-email');
+      const fw=it.getAttribute('data-folder');
+      if(!em||!fw)continue;
+      const cnt=(cache[em]||{})[fw]||0;
+      let badge=it.querySelector('.uc');
+      if(cnt>0){
+        if(!badge){
+          badge=document.createElement('span');
+          badge.className='cnt uc';
+          it.appendChild(badge);
+        }
+        badge.textContent=cnt;
+      }else if(badge){
+        badge.remove();
+      }
+    }
+  }catch(err){}
 }
 
 async function loadFolders(account){
@@ -1341,10 +1376,12 @@ function renderList(){
     const av=avatarHtml(m.from,40);
     const pf=parseFrom(m.from);
     const bounce=m.is_bounce?'<span class="badge-bounce">退信</span>':'';
-    return `<div class="mailrow" onclick="openMail(${i})">
+    const unread=(m.is_read===false);
+    const unreadDot=unread?'<span class="unread-dot"></span>':'';
+    return `<div class="mailrow ${unread?'unread':''}" onclick="openMail(${i})">
       ${av}
       <div class="body">
-        <div class="r1"><span class="from">${esc(pf.name)}</span><span class="date">${esc(m.date)}</span></div>
+        <div class="r1"><span class="from">${unreadDot}${esc(pf.name)}</span><span class="date">${esc(m.date)}</span></div>
         <div class="from-email">${esc(pf.email)}</div>
         <div class="subject">${bounce}${esc(m.subject)}</div>
         <div class="preview">${esc(m.preview||'')}</div>
