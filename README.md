@@ -88,13 +88,16 @@ docker run -d -p 20111:20111 -v /你的数据目录:/app/data mailhub
 
 ```
 mailhub/
-├── app.py          # Web 服务（http.server 标准库）+ 前端页面 + API
-├── imap_client.py  # IMAP 客户端（含 163 的 ID 命令、UTF-7 解码）
-├── storage.py      # SQLite 存储（账号 / 邮件缓存 / 正文缓存 / 设置）
-├── config.py       # 邮箱服务器预设
-├── Dockerfile      # Docker 部署
-├── .gitignore      # 排除敏感文件（数据库等）
-└── mailhub.db      # 账号数据库（运行后自动生成，不入库）
+├── app.py            # Web 服务（http.server 标准库）+ API
+├── imap_client.py    # IMAP 客户端（含 163 的 ID 命令、UTF-7 解码）
+├── storage.py        # SQLite 存储（账号 / 邮件缓存 / 正文缓存 / 设置）
+├── config.py         # 邮箱服务器预设
+├── frontend/
+│   └── index.html    # 前端页面（独立文件，改界面不需要动 app.py）
+├── Dockerfile        # Docker 部署
+├── .gitignore        # 排除敏感文件（数据库等）
+├── LICENSE           # MIT 许可
+└── mailhub.db        # 账号数据库（运行后自动生成，不入库）
 ```
 
 ---
@@ -156,7 +159,6 @@ mailhub/
 - [ ] 邮件删除 / 标记已读 / 移动文件夹（IMAP 写操作互交）
 - [ ] 附件在线预览（图片缩放 / PDF）
 - [ ] 任意范围同步的增量同步（当前每次全量重扫）
-- [ ] 前端依赖注入式重构（当前前端 HTML 内嵌于 `app.py` 字符串）
 
 ### ❌ 已知限制（当前版本）
 - 单用户、无鉴权
