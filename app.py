@@ -488,7 +488,9 @@ def send_email(account_email, to, subject, body_html, cc='', bcc='', attachments
     # 构造邮件（有附件用 mixed，否则 alternative）
     has_att = attachments and len(attachments) > 0
     msg = MIMEMultipart('mixed' if has_att else 'alternative')
-    msg['From'] = account_email
+    # From 头带显示名（display_name 为空时退回裸邮箱）
+    display_name = (acc.get('display_name') or '').strip()
+    msg['From'] = formataddr((display_name, account_email)) if display_name else account_email
     msg['To'] = ', '.join(to_list)
     msg['Subject'] = Header(subject or '(无主题)', 'utf-8')
     if cc_list:
