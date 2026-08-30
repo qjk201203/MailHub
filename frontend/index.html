@@ -128,12 +128,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
 .mailrow .avatar img{width:100%;height:100%;object-fit:cover;border-radius:50%}
 .mailrow .body{flex:1;min-width:0}
 .mailrow .r1{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px}
-.mailrow .from{font-weight:600;font-size:14px;color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mailrow .from{font-weight:600;font-size:13px;color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mailrow .from-email{font-size:11.5px;color:var(--muted);word-break:break-all}
 .mailrow .from-email-inline{font-size:11px;color:var(--muted);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
-.mailrow .date{font-size:11px;color:var(--muted);flex:0 0 auto;margin-left:8px}
-.mailrow .subject{font-size:13.5px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:1px}
-.mailrow .preview{font-size:12.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mailrow .mail-account{font-size:10.5px;color:var(--accent);margin-left:6px;white-space:nowrap}
+.mailrow .date{font-size:10.5px;color:var(--muted);flex:0 0 auto;margin-left:8px}
+.mailrow .subject{font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:1px}
+.mailrow .preview{font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mailrow .badge{font-size:9.5px;color:var(--accent);background:var(--active);padding:1px 6px;border-radius:8px;flex:0 0 auto;margin-left:6px}
 .mailrow .badge-bounce{font-size:10px;color:#c53929;background:#fdecea;padding:1px 6px;border-radius:8px;margin-right:6px;font-weight:600}
 .mailrow .read-toggle{flex:0 0 auto;border:none;background:none;cursor:pointer;font-size:16px;color:var(--muted);padding:2px 4px;line-height:1;opacity:0;transition:opacity .15s}
@@ -920,8 +921,11 @@ function renderList(){
     const unread=(m.is_read===false);
     const unreadDot=unread?'<span class="unread-dot"></span>':'';
     const checked = _selected.has(m)?'checked':'';
-    // 发件人显示：名字和邮箱不同时，拼成「名字 <邮箱>」一行；相同（纯邮箱）就只显示一次
-    const showEmail = pf.name && pf.email && pf.name !== pf.email ? `<span class="from-email-inline">${esc(pf.email)}</span>` : '';
+    // 发件人邮箱（始终显示一行）
+    const showEmail = `<span class="from-email-inline">${esc(pf.email)}</span>`;
+    // 归属邮箱（全部收件箱模式下显示，否则也显示但用当前账号）
+    const acctName = m.account_name || '';
+    const acctLine = acctName ? `<span class="mail-account">${esc(acctName)}</span>` : '';
     return `<div class="mailrow ${unread?'unread':''}" onclick="openMail(${i})">
       <input type="checkbox" class="mail-check" ${checked} onclick="event.stopPropagation();toggleSelect(${i})">
       ${av}
@@ -929,9 +933,8 @@ function renderList(){
         <div class="r1"><span class="from">${unreadDot}${esc(pf.name)}</span><span class="date">${esc(smartDate(m.date))}</span></div>
         ${showEmail}
         <div class="subject">${bounce}${esc(m.subject)}</div>
-        <div class="preview">${esc(m.preview||'')}</div>
+        <div class="preview">${esc(m.preview||'')}${acctLine}</div>
       </div>
-      ${curAccount==='all'?`<span class="badge">${esc(m.account_name)}</span>`:''}
       <button class="star-toggle" title="${m.flagged?'取消星标':'加星标'}" onclick="event.stopPropagation();toggleStar(${i})">${m.flagged?'★':'☆'}</button>
       <button class="read-toggle" title="${unread?'标为已读':'标为未读'}" onclick="event.stopPropagation();toggleRead(${i})">${unread?'●':'○'}</button>
     </div>`;
