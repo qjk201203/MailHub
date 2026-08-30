@@ -111,6 +111,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
 .maillist{flex:1;overflow-y:auto;background:var(--surface-2);-webkit-overflow-scrolling:touch;padding:8px}
 /* 移动端：邮件列表上方的当前文件夹名称 */
 .folder-bar{display:block;padding:10px 16px;font-size:15px;font-weight:600;color:var(--text);background:var(--surface);border-bottom:1px solid var(--border);flex:0 0 auto}
+/* 移动端搜索框（独立一行，桌面端隐藏，顶栏搜索框在桌面用） */
+.mobile-search{display:flex;align-items:center;gap:6px;background:var(--surface);border-bottom:1px solid var(--border);padding:8px 16px;flex:0 0 auto}
+.mobile-search .search-ic{width:16px;height:16px;fill:var(--muted);flex:0 0 16px}
+.mobile-search input{flex:1;min-width:0;border:none;outline:none;background:transparent;font-size:14px;color:var(--text)}
 .mailrow{display:flex;padding:var(--dense,14px) 16px;border-bottom:1px solid var(--border);cursor:pointer;gap:12px;align-items:flex-start;background:var(--surface);border-radius:12px;margin-bottom:6px;box-shadow:var(--shadow);transition:box-shadow .15s,transform .1s}
 .mailrow.unread{background:#eef4ff}
 .mailrow.unread .from{font-weight:700}
@@ -212,6 +216,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
   .drawer-mask{display:none !important}
   #sortBar{grid-area:sort;display:flex;align-items:center;border-bottom:1px solid var(--border);height:40px;padding:0 12px}
   .folder-bar{display:none}
+  .mobile-search{display:none}
   .maillist{grid-area:list;height:auto;border-right:1px solid var(--border);position:relative}
   .reader{grid-area:reader;position:static;transform:none;display:flex;width:auto;height:auto;z-index:1}
   .fab{display:none}
@@ -366,6 +371,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
   <button class="text-btn" style="color:#c53929" onclick="batchDelete()">删除</button>
 </div>
 <div class="folder-bar" id="folderBar">收件箱</div>
+<div class="mobile-search" id="mobileSearch">
+  <svg class="search-ic"><use href="#i-search"/></svg>
+  <input placeholder="搜索邮件" oninput="document.getElementById('searchInput').value=this.value;onSearch(this.value)">
+  <button onclick="this.previousElementSibling.value='';document.getElementById('searchInput').value='';onSearch('')" style="border:none;background:none;color:var(--muted);font-size:16px;cursor:pointer">✕</button>
+</div>
 <div class="maillist" id="mailList"><div class="col-resizer" id="listResizer" title="拖动调节宽度"></div><div class="loading">加载中…</div></div>
 <button class="fab" onclick="showSendTip()"><svg><use href="#i-edit"/></svg></button>
 
