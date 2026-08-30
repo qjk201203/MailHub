@@ -736,7 +736,23 @@ async function loadSettings(){
 function refreshSyncStatus(st){
   const el=document.getElementById('syncStatus');if(!el)return;
   if(!st)return;
-  if(st.running){el.textContent='同步中… 已完成 '+st.done+' / '+st.total+' 封';}
+  if(st.running){
+    const done=st.done||0, total=st.total||0;
+    if(total>0){
+      const left=total-done;
+      const pct=Math.floor(done/total*100);
+      let tip='同步中… '+done+'/'+total+' 封（还剩 '+left+' 封，'+pct+'%）';
+      if(st.current_folder)tip+=' · '+st.current_folder;
+      el.textContent=tip;
+    }else{
+      // total 还没统计出来：显示当前正在扫描的文件夹
+      let tip='同步中… 正在扫描';
+      if(st.current_account)tip+=' '+st.current_account;
+      if(st.current_folder)tip+=' / '+st.current_folder;
+      tip+='…';
+      el.textContent=tip;
+    }
+  }
   else if(st.last_error){el.textContent='上次同步失败：'+st.last_error;}
   else if(st.total>0){el.textContent='已缓存 '+st.total+' 封邮件正文';}
 }
