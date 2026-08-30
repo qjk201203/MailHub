@@ -647,6 +647,20 @@ function parseFrom(from){
   }
   return {name: s, email: s};
 }
+// 智能日期：今天→时间，昨天→"昨天"，7天内→星期，更早→日期
+function smartDate(dstr){
+  if(!dstr)return '';
+  const d=new Date(dstr.replace(' ','T'));
+  if(isNaN(d.getTime()))return dstr;
+  const now=new Date();
+  const today=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+  const that=new Date(d.getFullYear(),d.getMonth(),d.getDate());
+  const diff=Math.round((today-that)/86400000);
+  if(diff===0){return d.toTimeString().slice(0,5);}
+  if(diff===1){return '昨天';}
+  if(diff>1 && diff<7){return ['周日','周一','周二','周三','周四','周五','周六'][d.getDay()];}
+  return (d.getMonth()+1)+'月'+d.getDate()+'日';
+}
 function faviconUrl(from){
   const d=emailDomain(from);
   return d?'/api/favicon?domain='+encodeURIComponent(d):'';
@@ -813,11 +827,29 @@ async function applyUnreadBadges(){
   }catch(err){}
 }
 
+// 常用文件夹排序优先级（收件箱/草稿/已发送/垃圾箱等置顶，其余按名称排序）
+function _folderPriority(name){
+  const n=String(name||'').toLowerCase();
+  if(n==='inbox'||n==='收件箱')return 0;
+  if(n==='草稿箱'||n==='草稿'||n==='drafts')return 1;
+  if(n==='已发送'||n==='已发邮件'||n==='sent'||n==='sent items')return 2;
+  if(n==='垃圾邮件'||n==='垃圾箱'||n==='spam'||n==='junk')return 3;
+  if(n==='已删除'||n==='已删除邮件'||n==='trash'||n==='deleted')return 4;
+  if(n==='归档'||n==='存档'||n==='archive')return 5;
+  return 99;
+}
 async function loadFolders(account){
   if(foldersCache[account]!==undefined)return;
   const r=await fetch('/api/folders?account='+encodeURIComponent(account));
   const d=await r.json();
-  foldersCache[account]=d.folders||[];
+  let flds=d.folders||[];
+  // 常用文件夹置顶，其余按名称排序
+  flds.sort(function(a,b){
+    const pa=_folderPriority(a.name), pb=_folderPriority(b.name);
+    if(pa!==pb)return pa-pb;
+    return String(a.name).localeCompare(String(b.name),'zh');
+  });
+  foldersCache[account]=flds;
 }
 
 async function switchAccount(acct){
@@ -868,7 +900,7 @@ function renderList(){
       <input type="checkbox" class="mail-check" ${checked} onclick="event.stopPropagation();toggleSelect(${i})">
       ${av}
       <div class="body">
-        <div class="r1"><span class="from">${unreadDot}${esc(pf.name)}</span><span class="date">${esc(m.date)}</span></div>
+        <div class="r1"><span class="from">${unreadDot}${esc(pf.name)}</span><span class="date">${esc(smartDate(m.date))}</span></div>
         ${showEmail}
         <div class="subject">${bounce}${esc(m.subject)}</div>
         <div class="preview">${esc(m.preview||'')}</div>
@@ -900,6 +932,19 @@ async function loadMore(){
   _offset+=PAGE_SIZE;
   await loadInbox(false);
 }
+
+// 滚动到底部自动加载更多（贴合主流客户端习惯）
+let _loadingMore=false;
+document.getElementById('mailList').addEventListener('scroll', function(){
+  const el=this;
+  if(_loadingMore)return;
+  if(el.scrollTop + el.clientHeight >= el.scrollHeight - 60){
+    if(_offset+PAGE_SIZE < 2000){ // 简易防无限加载（后端有上限时自然停）
+      _loadingMore=true;
+      loadMore().finally(()=>{ _loadingMore=false; });
+    }
+  }
+});
 
 // 切换账号/文件夹时重置分页
 function resetPaging(){
@@ -1257,7 +1302,9 @@ async function submitAdd(){
   const addedEmail=document.getElementById('addEmail').value;
   toast('🎉 恭喜你已添加邮箱 ' + addedEmail, false, true);closeAdd();
   document.getElementById('addEmail').value='';document.getElementById('addPass').value='';document.getElementById('addImapHost').value='';document.getElementById('addImapPort').value='';document.getElementById('addSmtpHost').value='';document.getElementById('addSmtpPort').value='';
-  loadAccounts();loadInbox();
+  // 添加后自动切换到新邮箱（主流客户端逻辑）
+  await loadAccounts();
+  switchAccount(addedEmail);
 }
 async function delAccount(email,ev){ev&&ev.stopPropagation();if(!confirm('删除账号 '+email+' ?'))return;await fetch('/api/account/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});delete foldersCache[email];toast('已删除');loadAccounts();if(curAccount===email){curAccount='all';curFolder='INBOX';curFolderRaw='INBOX'}loadInbox()}
 
