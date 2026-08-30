@@ -589,6 +589,26 @@ def delete_mail(account_email, folder, seq):
         a.logout()
 
 
+def _friendly_imap_error(e):
+    """把 imaplib 异常转成友好中文提示，方便用户排查（密码错/服务器不通/端口/加密等）。"""
+    s = str(e).lower()
+    if 'authentication' in s or 'login' in s or 'auth' in s or 'pass' in s or 'credentials' in s:
+        return '登录失败：邮箱或授权码错误（请用授权码/应用专用密码，而非登录密码）'
+    if 'refused' in s or 'connection' in s and 'timeout' in s:
+        return '连接超时或服务器无法访问：请检查 IMAP 服务器地址和端口'
+    if 'timeout' in s or 'timed out' in s:
+        return '连接超时：请检查网络或服务器地址'
+    if 'ssl' in s or 'tls' in s or 'certificate' in s or 'handshake' in s:
+        return '加密方式错误：请检查选择了正确的 SSL/TLS 加密方式'
+    if 'unsafe' in s:
+        return '服务器拒绝了连接（Unsafe Login）：网易邮箱需要客户端授权码'
+    if 'refused' in s:
+        return '连接被拒绝：服务器端口或地址错误'
+    if 'name or service not known' in s or 'getaddrinfo' in s or 'unknown host' in s:
+        return '服务器地址错误：无法解析域名'
+    return 'IMAP 连接失败：%s' % str(e)
+
+
 def send_email(account_email, to, subject, body_html, cc='', bcc='', attachments=None):
     """用指定账号发送邮件（SMTP）。attachments: [{name, data(base64), content_type}]"""
     acc = storage.get_account(account_email)
@@ -880,7 +900,7 @@ class Handler(BaseHTTPRequestHandler):
                 a.connect()
                 a.logout()
             except Exception as e:
-                self._send(400, {'error': 'IMAP 连接验证失败: %s' % e})
+                self._send(400, {'error': _friendly_imap_error(e)})
                 return
 
             storage.add_account(email, password, imap_host, imap_port, imap_ssl,
