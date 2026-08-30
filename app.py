@@ -30,6 +30,9 @@ from imap_client import MailAccount
 
 PORT = 20111
 
+# 自动增量同步间隔（秒）：定期拉最新邮件到本地缓存，新邮件延迟 = 这个间隔
+AUTO_SYNC_INTERVAL = 120
+
 # 登录鉴权：设置环境变量 MAILHUB_PASSWORD 后启用（留空则无鉴权，仅适合纯内网且完全可信环境）
 AUTH_PASSWORD = os.environ.get('MAILHUB_PASSWORD', '').strip()
 AUTH_COOKIE = 'mailhub_token'
@@ -377,6 +380,54 @@ def start_background_sync(sync_range):
     if _SYNC_STATUS.get('running'):
         return
     t = threading.Thread(target=_run_background_sync, args=(sync_range,))
+    t.daemon = True
+    t.start()
+
+
+def _auto_incremental_sync():
+    """常驻线程：每隔 AUTO_SYNC_INTERVAL 秒，拉各账号最新 N 封的列表头+正文到本地缓存。
+    解决「新邮件延迟几小时才显示」和「点邮件要实时连 Gmail 慢到死」两个问题。"""
+    LATEST_N = 30
+    while True:
+        try:
+            for acc in storage.list_accounts():
+                email = acc['email']
+                try:
+                    a = MailAccount(email, acc['password'], acc['imap_host'],
+                                    acc['imap_port'], acc.get('imap_ssl', 1))
+                    a.connect()
+                    for folder in ['INBOX']:
+                        try:
+                            headers = a.fetch_recent(folder, LATEST_N, light=True)
+                            if headers:
+                                for m in headers:
+                                    m['account'] = email
+                                    m['account_name'] = acc['display_name'] or email
+                                    m['folder'] = folder
+                                storage.save_mail_cache(email, folder, headers)
+                            # 预取最新正文（未缓存的部分）
+                            seqs = [m.get('uid','') for m in headers if m.get('uid','') and not storage.load_body(email, folder, m.get('uid',''))]
+                            if seqs:
+                                bodies = a.fetch_bodies_batch(folder, seqs)
+                                for seq, full in bodies.items():
+                                    try:
+                                        full['account'] = email
+                                        full['account_name'] = acc['display_name'] or email
+                                        storage.save_body(email, folder, seq, full)
+                                    except Exception:
+                                        continue
+                        except Exception:
+                            continue
+                    a.logout()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        _time.sleep(AUTO_SYNC_INTERVAL)
+
+
+def start_auto_sync():
+    t = threading.Thread(target=_auto_incremental_sync)
     t.daemon = True
     t.start()
 
@@ -901,6 +952,7 @@ def _sanitize_accounts(accounts):
 def main():
     storage.init_db()
     start_unread_refresher()
+    start_auto_sync()
     server = HTTPServer(('0.0.0.0', PORT), Handler)
     print('MailHub 已启动： http://127.0.0.1:%d' % PORT)
     server.serve_forever()

@@ -132,6 +132,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
 .mailrow .read-toggle{flex:0 0 auto;border:none;background:none;cursor:pointer;font-size:16px;color:var(--muted);padding:2px 4px;line-height:1;opacity:0;transition:opacity .15s}
 .mailrow:hover .read-toggle{opacity:1}
 .mailrow .read-toggle:hover{color:var(--accent)}
+.mailrow .mail-check{flex:0 0 auto;width:16px;height:16px;cursor:pointer;margin-top:2px;accent-color:var(--accent)}
 
 /* 写邮件按钮 */
 .fab{position:fixed;bottom:22px;right:18px;width:56px;height:56px;border-radius:16px;background:var(--accent);color:#fff;border:none;cursor:pointer;box-shadow:0 3px 12px rgba(11,87,208,.4);z-index:30;display:flex;align-items:center;justify-content:center}
@@ -348,10 +349,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
 </div>
 
 <div style="display:flex;gap:4px;padding:6px 12px;border-bottom:1px solid var(--border);background:var(--surface);font-size:12px" id="sortBar">
+  <button class="zbtn" style="height:26px;min-width:auto;padding:0 10px" onclick="selectAll()">全选</button>
   <span style="color:var(--muted);padding:4px 0">排序：</span>
   <button class="zbtn sortbtn" data-sort="date" style="height:26px;min-width:auto;padding:0 10px" onclick="setSort('date')">时间</button>
   <button class="zbtn sortbtn" data-sort="from" style="height:26px;min-width:auto;padding:0 10px" onclick="setSort('from')">发件人</button>
   <button class="zbtn sortbtn" data-sort="subject" style="height:26px;min-width:auto;padding:0 10px" onclick="setSort('subject')">主题</button>
+</div>
+<div style="display:none;gap:8px;padding:6px 12px;background:var(--active);border-bottom:1px solid var(--border);font-size:13px;align-items:center" id="batchBar">
+  <span style="font-weight:600">已选 <span id="batchCount">0</span> 封</span>
+  <button class="text-btn" onclick="batchMarkRead(true)">标为已读</button>
+  <button class="text-btn" onclick="batchMarkRead(false)">标为未读</button>
+  <button class="text-btn" style="color:#c53929" onclick="batchDelete()">删除</button>
 </div>
 <div class="folder-bar" id="folderBar">收件箱</div>
 <div class="maillist" id="mailList"><div class="col-resizer" id="listResizer" title="拖动调节宽度"></div><div class="loading">加载中…</div></div>
@@ -508,6 +516,7 @@ function applySort(){
 // 搜索筛选（关键词）
 let _searchTerm='';
 let _unreadOnly=false;
+let _selected=new Set();   // 勾选的邮件对象
 function onSearch(v){
   _searchTerm=(v||'').trim().toLowerCase();
   renderList();
@@ -559,6 +568,51 @@ async function toggleRead(i){
   fetch(ep,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:m.account,folder:m.folder||curFolder,seq:m.uid})})
     .then(()=>{ try{applyUnreadBadges();}catch(e){} })
     .catch(()=>{});
+}
+
+// 勾选/取消勾选单封邮件
+function toggleSelect(i){
+  const m=mails[i];if(!m)return;
+  if(_selected.has(m))_selected.delete(m);else _selected.add(m);
+  renderList();
+  updateBatchBar();
+}
+function selectAll(){
+  if(_selected.size===mails.length){_selected.clear();}else{mails.forEach(m=>_selected.add(m));}
+  renderList();updateBatchBar();
+}
+function updateBatchBar(){
+  const bar=document.getElementById('batchBar');
+  const cnt=document.getElementById('batchCount');
+  if(!bar)return;
+  if(_selected.size>0){bar.style.display='flex';cnt.textContent=_selected.size;}else{bar.style.display='none';}
+}
+// 批量标记已读/未读
+async function batchMarkRead(read){
+  const sel=[..._selected];
+  if(sel.length===0){toast('请先勾选邮件',true);return;}
+  const ep=read?'/api/mark_read':'/api/mark_unread';
+  for(const m of sel){
+    m.is_read=read;
+    try{await fetch(ep,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:m.account,folder:m.folder||curFolder,seq:m.uid})});}catch(e){}
+  }
+  _selected.clear();
+  renderList();updateBatchBar();
+  try{applyUnreadBadges();}catch(e){}
+  toast('已批量'+(read?'标记已读':'标记未读'),false,true);
+}
+// 批量删除
+async function batchDelete(){
+  const sel=[..._selected];
+  if(sel.length===0){toast('请先勾选邮件',true);return;}
+  if(!confirm('确定删除选中的 '+sel.length+' 封邮件？'))return;
+  for(const m of sel){
+    try{await fetch('/api/mail/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:m.account,folder:m.folder||curFolder,seq:m.uid})});}catch(e){}
+  }
+  _selected.clear();
+  renderList();updateBatchBar();
+  loadInbox(true);
+  toast('已删除 '+sel.length+' 封',false,true);
 }
 
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
@@ -799,13 +853,16 @@ function renderList(){
     el.innerHTML='<div class="empty">'+(_searchTerm?'🔍 没有匹配的邮件':(_unreadOnly?'✅ 没有未读邮件':'📭 没有邮件'))+'</div>';
     return;
   }
-  el.innerHTML=filtered.map((m,i)=>{
+  el.innerHTML=filtered.map((m)=>{
+    const i = mails.indexOf(m);
     const av=avatarHtml(m.from,40);
     const pf=parseFrom(m.from);
     const bounce=m.is_bounce?'<span class="badge-bounce">退信</span>':'';
     const unread=(m.is_read===false);
     const unreadDot=unread?'<span class="unread-dot"></span>':'';
+    const checked = _selected.has(m)?'checked':'';
     return `<div class="mailrow ${unread?'unread':''}" onclick="openMail(${i})">
+      <input type="checkbox" class="mail-check" ${checked} onclick="event.stopPropagation();toggleSelect(${i})">
       ${av}
       <div class="body">
         <div class="r1"><span class="from">${unreadDot}${esc(pf.name)}</span><span class="date">${esc(m.date)}</span></div>
@@ -1204,6 +1261,17 @@ async function delAccount(email,ev){ev&&ev.stopPropagation();if(!confirm('删除
 applyPrefs();
 loadAccounts();
 switchAccount('all');
+
+// 自动轮询：每 60 秒静默刷新未读数和列表（后端已有自动增量同步缓存，这里只读缓存，秒回）
+setInterval(async function(){
+  try{
+    applyUnreadBadges();
+    // 仅在页面可见时刷新列表（后台时后端同步线程已在拉缓存，无需前端重复请求）
+    if(!document.hidden){
+      try{ await fetch('/api/inbox?folder='+encodeURIComponent(curFolder)+'&offset=0&limit='+PAGE_SIZE); loadInbox(false); }catch(e){}
+    }
+  }catch(e){}
+}, 60000);
 
 // 桌面端分栏拖拽调宽（独立、无依赖，出错不影响其他功能）
 (function(){
