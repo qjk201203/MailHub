@@ -124,6 +124,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
 .mailrow .r1{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px}
 .mailrow .from{font-weight:600;font-size:14px;color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mailrow .from-email{font-size:11.5px;color:var(--muted);word-break:break-all}
+.mailrow .from-email-inline{font-size:11px;color:var(--muted);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
 .mailrow .date{font-size:11px;color:var(--muted);flex:0 0 auto;margin-left:8px}
 .mailrow .subject{font-size:13.5px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:1px}
 .mailrow .preview{font-size:12.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -861,12 +862,14 @@ function renderList(){
     const unread=(m.is_read===false);
     const unreadDot=unread?'<span class="unread-dot"></span>':'';
     const checked = _selected.has(m)?'checked':'';
+    // 发件人显示：名字和邮箱不同时，拼成「名字 <邮箱>」一行；相同（纯邮箱）就只显示一次
+    const showEmail = pf.name && pf.email && pf.name !== pf.email ? `<span class="from-email-inline">${esc(pf.email)}</span>` : '';
     return `<div class="mailrow ${unread?'unread':''}" onclick="openMail(${i})">
       <input type="checkbox" class="mail-check" ${checked} onclick="event.stopPropagation();toggleSelect(${i})">
       ${av}
       <div class="body">
         <div class="r1"><span class="from">${unreadDot}${esc(pf.name)}</span><span class="date">${esc(m.date)}</span></div>
-        <div class="from-email">${esc(pf.email)}</div>
+        ${showEmail}
         <div class="subject">${bounce}${esc(m.subject)}</div>
         <div class="preview">${esc(m.preview||'')}</div>
       </div>
