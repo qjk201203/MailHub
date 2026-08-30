@@ -807,6 +807,8 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif path == '/api/sync/status':
             self._send(200, _SYNC_STATUS)
+        elif path == '/api/health':
+            self._send(200, {'ok': True})
         elif path == '/api/unread':
             # 返回各账号各文件夹的未读计数（内存缓存，后台逐步累加，边遍历边可见）
             self._send(200, {

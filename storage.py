@@ -13,6 +13,9 @@ DB_PATH = os.path.join(_DATA_DIR, 'mailhub.db')
 def get_db():
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
+    # WAL 模式：读不阻塞写、写不阻塞读，并发响应更快
+    db.execute('PRAGMA journal_mode=WAL')
+    db.execute('PRAGMA synchronous=NORMAL')
     return db
 
 
