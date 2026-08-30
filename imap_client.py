@@ -11,9 +11,55 @@ import imaplib
 import email
 import base64
 import re
+import os
+import socket
 import datetime
 from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime
+
+
+def _http_proxy_tunnel(proxy, host, port, timeout=20):
+    """通过 HTTP 代理（如 mihomo 7890）的 CONNECT 方法建立到 host:port 的 TCP 隧道。
+    返回已建立的 socket（未加密）。Gmail 等国外邮箱走代理可快百倍。"""
+    p = proxy.replace('http://', '').replace('https://', '')
+    ph, pp = (p.split(':') + ['80'])[:2]
+    s = socket.create_connection((ph, int(pp)), timeout=timeout)
+    s.sendall(('CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n\r\n' % (host, port, host, port)).encode())
+    resp = b''
+    while b'\r\n\r\n' not in resp:
+        chunk = s.recv(4096)
+        if not chunk:
+            break
+        resp += chunk
+        if len(resp) > 8192:
+            break
+    if b'200' not in resp.split(b'\r\n')[0]:
+        s.close()
+        raise Exception('代理 CONNECT 失败: %s' % resp.split(b'\r\n')[0].decode('utf-8', 'ignore'))
+    return s
+
+
+class _ProxyIMAP4(imaplib.IMAP4):
+    """走 HTTP 代理隧道的 IMAP4（用于 Gmail 等需代理的邮箱，明文/STARTTLS）"""
+    _proxy = None
+
+    def _create_socket(self, timeout):
+        if timeout is not None and not timeout:
+            raise ValueError('Non-blocking socket (timeout=0) is not supported')
+        host = None if not self.host else self.host
+        return _http_proxy_tunnel(self._proxy, host, self.port, timeout=timeout or 20)
+
+
+class _ProxyIMAP4_SSL(_ProxyIMAP4):
+    """走 HTTP 代理隧道 + SSL 的 IMAP4（Gmail 993）"""
+    def _create_socket(self, timeout):
+        import ssl as _ssl
+        raw = super()._create_socket(timeout)
+        host = None if not self.host else self.host
+        ctx = _ssl._create_stdlib_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        return ctx.wrap_socket(raw, server_hostname=host)
 
 
 def _imap_utf7_decode(s):
@@ -100,15 +146,30 @@ class MailAccount:
             return False
 
     def connect(self):
-        """建立 IMAP 连接并登录（支持 SSL / STARTTLS / 明文）"""
-        if self.imap_ssl == 2:
-            # STARTTLS：先明文连接再升级
-            self.conn = imaplib.IMAP4(self.imap_host, self.imap_port)
+        """建立 IMAP 连接并登录（支持 SSL / STARTTLS / 明文，可走 HTTP 代理隧道）"""
+        proxy = os.environ.get('MAILHUB_PROXY', '').strip()
+        # SSL 直连（993）：走代理则用 _ProxyIMAP4_SSL（隧道+SSL），否则 IMAP4_SSL
+        if self.imap_ssl == 1:
+            if proxy:
+                cls = type('ProxySSL', (_ProxyIMAP4_SSL,), {'_proxy': proxy})
+                self.conn = cls(self.imap_host, self.imap_port)
+            else:
+                self.conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
+        elif self.imap_ssl == 2:
+            # STARTTLS：先明文（可走代理隧道），再升级
+            if proxy:
+                cls = type('ProxyPlain', (_ProxyIMAP4,), {'_proxy': proxy})
+                self.conn = cls(self.imap_host, self.imap_port)
+            else:
+                self.conn = imaplib.IMAP4(self.imap_host, self.imap_port)
             self.conn.starttls()
-        elif self.imap_ssl == 0:
-            self.conn = imaplib.IMAP4(self.imap_host, self.imap_port)
         else:
-            self.conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
+            # 明文
+            if proxy:
+                cls = type('ProxyPlain', (_ProxyIMAP4,), {'_proxy': proxy})
+                self.conn = cls(self.imap_host, self.imap_port)
+            else:
+                self.conn = imaplib.IMAP4(self.imap_host, self.imap_port)
         typ, dat = self.conn.login(self.email_addr, self.password)
         if typ != 'OK':
             raise Exception('IMAP 登录失败: %s' % dat)
