@@ -150,6 +150,27 @@ def get_max_cached_seq(account, folder):
     return row['mx'] if row and row['mx'] else 0
 
 
+def update_mail_read_status(account, folder, seq, is_read):
+    """更新单个邮件头缓存里的 is_read 字段（已读标记后同步缓存，避免刷新又变回未读）"""
+    import json
+    db = get_db()
+    row = db.execute('''
+        SELECT data FROM mail_cache
+        WHERE account=? AND folder=? AND seq=?
+    ''', (account, folder, str(seq))).fetchone()
+    if row:
+        try:
+            data = json.loads(row['data'])
+            data['is_read'] = bool(is_read)
+            db.execute('''
+                UPDATE mail_cache SET data=? WHERE account=? AND folder=? AND seq=?
+            ''', (json.dumps(data, ensure_ascii=False), account, folder, str(seq)))
+            db.commit()
+        except Exception:
+            pass
+    db.close()
+
+
 # ---- 邮件正文缓存（磁盘持久化，点开秒开） ----
 
 def save_body(account, folder, seq, mail_dict):

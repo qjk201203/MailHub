@@ -129,6 +129,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
 .mailrow .preview{font-size:12.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mailrow .badge{font-size:9.5px;color:var(--accent);background:var(--active);padding:1px 6px;border-radius:8px;flex:0 0 auto;margin-left:6px}
 .mailrow .badge-bounce{font-size:10px;color:#c53929;background:#fdecea;padding:1px 6px;border-radius:8px;margin-right:6px;font-weight:600}
+.mailrow .read-toggle{flex:0 0 auto;border:none;background:none;cursor:pointer;font-size:16px;color:var(--muted);padding:2px 4px;line-height:1;opacity:0;transition:opacity .15s}
+.mailrow:hover .read-toggle{opacity:1}
+.mailrow .read-toggle:hover{color:var(--accent)}
 
 /* 写邮件按钮 */
 .fab{position:fixed;bottom:22px;right:18px;width:56px;height:56px;border-radius:16px;background:var(--accent);color:#fff;border:none;cursor:pointer;box-shadow:0 3px 12px rgba(11,87,208,.4);z-index:30;display:flex;align-items:center;justify-content:center}
@@ -542,7 +545,20 @@ async function markAllRead(){
     }catch(e){}
   }
   renderList();
+  try{applyUnreadBadges();}catch(e){}
   toast('已标记 '+done+' 封为已读',false,true);
+}
+
+// 单封邮件切换 已读/未读
+async function toggleRead(i){
+  const m=mails[i];if(!m)return;
+  const target = (m.is_read===false); // 当前未读 → 标为已读(true)
+  m.is_read = target;
+  renderList();
+  const ep = target ? '/api/mark_read' : '/api/mark_unread';
+  fetch(ep,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:m.account,folder:m.folder||curFolder,seq:m.uid})})
+    .then(()=>{ try{applyUnreadBadges();}catch(e){} })
+    .catch(()=>{});
 }
 
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
@@ -798,6 +814,7 @@ function renderList(){
         <div class="preview">${esc(m.preview||'')}</div>
       </div>
       ${curAccount==='all'?`<span class="badge">${esc(m.account_name)}</span>`:''}
+      <button class="read-toggle" title="${unread?'标为已读':'标为未读'}" onclick="event.stopPropagation();toggleRead(${i})">${unread?'●':'○'}</button>
     </div>`;
   }).join('');
   // 加载更多按钮（无搜索词时才显示）
@@ -832,11 +849,13 @@ function resetPaging(){
 async function openMail(i){
   const m=mails[i];if(!m)return;
   _curMailIndex=i;
-  // 打开即标已读（本地立即更新 + 后台同步服务器 \Seen）
+  // 打开即标已读（本地立即更新 + 后台同步服务器 \Seen + 刷新侧边栏未读数）
   if(m.is_read===false){
     m.is_read=true;
     renderList();
-    fetch('/api/mark_read',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:m.account,folder:m.folder||curFolder,seq:m.uid})}).catch(()=>{});
+    fetch('/api/mark_read',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:m.account,folder:m.folder||curFolder,seq:m.uid})})
+      .then(()=>{ try{applyUnreadBadges();}catch(e){} })
+      .catch(()=>{});
   }
   const rd=document.getElementById('reader');
   const body=document.getElementById('readerBody');

@@ -431,7 +431,7 @@ def fetch_mail_body(account_email, folder, seq_num):
 
 
 def mark_read(account_email, folder, seq):
-    """在 IMAP 服务器上把某封邮件标记为已读（\\Seen）。"""
+    """在 IMAP 服务器上把某封邮件标记为已读（\\Seen），并同步本地缓存与未读计数。"""
     acc = storage.get_account(account_email)
     if not acc:
         return False
@@ -443,7 +443,59 @@ def mark_read(account_email, folder, seq):
         except Exception:
             return False
         typ, data = a.conn.store(seq, '+FLAGS', '(\\Seen)')
-        return typ == 'OK'
+        if typ != 'OK':
+            return False
+        # 同步磁盘缓存：该封邮件 is_read=True（避免刷新后又变回未读）
+        storage.update_mail_read_status(account_email, folder, seq, True)
+        # 同步未读计数缓存 -1（侧边栏数字立即变化）
+        _unread_decrement(account_email, folder)
+        return True
+    except Exception:
+        return False
+    finally:
+        a.logout()
+
+
+def _unread_decrement(account_email, folder):
+    """把某账号某文件夹的未读计数 -1（最低 0），侧边栏未读数立即变化。"""
+    try:
+        cnt = _UNREAD_CACHE.get(account_email, {})
+        cur = int(cnt.get(folder, 0))
+        if cur > 0:
+            cnt[folder] = cur - 1
+            _UNREAD_CACHE[account_email] = cnt
+    except Exception:
+        pass
+
+
+def _unread_increment(account_email, folder):
+    """把某账号某文件夹的未读计数 +1，侧边栏未读数立即变化。"""
+    try:
+        cnt = _UNREAD_CACHE.get(account_email, {})
+        cnt[folder] = int(cnt.get(folder, 0)) + 1
+        _UNREAD_CACHE[account_email] = cnt
+    except Exception:
+        pass
+
+
+def mark_unread(account_email, folder, seq):
+    """把某封邮件标记为未读（移除 \\Seen），并同步缓存与未读计数。"""
+    acc = storage.get_account(account_email)
+    if not acc:
+        return False
+    a = MailAccount(acc['email'], acc['password'], acc['imap_host'], acc['imap_port'], acc.get('imap_ssl', 1))
+    try:
+        a.connect()
+        try:
+            a.select_folder(folder, readonly=False)
+        except Exception:
+            return False
+        typ, data = a.conn.store(seq, '-FLAGS', '(\\Seen)')
+        if typ != 'OK':
+            return False
+        storage.update_mail_read_status(account_email, folder, seq, False)
+        _unread_increment(account_email, folder)
+        return True
     except Exception:
         return False
     finally:
@@ -789,6 +841,13 @@ class Handler(BaseHTTPRequestHandler):
             folder = data.get('folder') or 'INBOX'
             seq = str(data.get('seq') or '')
             ok = mark_read(account, folder, seq)
+            self._send(200, {'ok': ok})
+
+        elif path == '/api/mark_unread':
+            account = (data.get('account') or '').strip()
+            folder = data.get('folder') or 'INBOX'
+            seq = str(data.get('seq') or '')
+            ok = mark_unread(account, folder, seq)
             self._send(200, {'ok': ok})
 
         elif path == '/api/mail/delete':
