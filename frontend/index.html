@@ -116,7 +116,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
 .mobile-search .search-ic{width:16px;height:16px;fill:var(--muted);flex:0 0 16px}
 .mobile-search input{flex:1;min-width:0;border:none;outline:none;background:transparent;font-size:14px;color:var(--text)}
 .mailrow{display:flex;padding:var(--dense,14px) 16px;border-bottom:1px solid var(--border);cursor:pointer;gap:12px;align-items:flex-start;background:var(--surface);border-radius:12px;margin-bottom:6px;box-shadow:var(--shadow);transition:box-shadow .15s,transform .1s}
+.mailrow{position:relative}
 .mailrow.unread{background:#eef4ff}
+.mailrow.unread::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--accent,#0b57d0)}
 .mailrow.unread .from{font-weight:700}
 .mailrow.unread .subject{font-weight:700}
 .mailrow .unread-dot{display:inline-block;width:8px;height:8px;background:var(--accent,#0b57d0);border-radius:50%;margin-right:6px;vertical-align:middle}
@@ -361,6 +363,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
   <button class="zbtn" style="height:26px;min-width:auto;padding:0 10px" onclick="selectAll()">全选</button>
   <span style="color:var(--muted);padding:4px 0">排序：</span>
   <button class="zbtn sortbtn" data-sort="date" style="height:26px;min-width:auto;padding:0 10px" onclick="setSort('date')">时间</button>
+  <button class="zbtn sortbtn" data-sort="unread" style="height:26px;min-width:auto;padding:0 10px" onclick="setSort('unread')">未读优先</button>
   <button class="zbtn sortbtn" data-sort="from" style="height:26px;min-width:auto;padding:0 10px" onclick="setSort('from')">发件人</button>
   <button class="zbtn sortbtn" data-sort="subject" style="height:26px;min-width:auto;padding:0 10px" onclick="setSort('subject')">主题</button>
 </div>
@@ -520,6 +523,7 @@ function setSort(k){
 function applySort(){
   if(_sortBy==='from'){mails.sort((a,b)=>(a.from||'').localeCompare(b.from||'','zh'));}
   else if(_sortBy==='subject'){mails.sort((a,b)=>(a.subject||'').localeCompare(b.subject||'','zh'));}
+  else if(_sortBy==='unread'){mails.sort((a,b)=>((b.is_read===false?1:0)-(a.is_read===false?1:0))||(b.date||'').localeCompare(a.date||''));}
   else{mails.sort((a,b)=>(b.date||'').localeCompare(a.date||''));}
   // 同步排序按钮高亮
   document.querySelectorAll('.sortbtn').forEach(function(b){
@@ -712,7 +716,7 @@ function applyPrefs(){
 }
 function setTheme(t){localStorage.setItem('mh_theme',t);applyPrefs()}
 function setFs(f){localStorage.setItem('mh_fs',f);applyPrefs()}
-function setDense(d){localStorage.setItem('mh_dense',d);applyPrefs();render()}
+function setDense(d){localStorage.setItem('mh_dense',d);applyPrefs();renderList()}
 function toggleSettings(){document.getElementById('settingsPanel').classList.toggle('show');document.getElementById('accDropdown').classList.remove('show');if(document.getElementById('settingsPanel').classList.contains('show')){loadSettings()}}
 function closeSettings(){document.getElementById('settingsPanel').classList.remove('show')}
 
