@@ -18,6 +18,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
 .searchbox .search-ic{width:16px;height:16px;fill:var(--muted);flex:0 0 16px}
 .searchbox input{flex:1;min-width:0;border:none;outline:none;background:transparent;font-size:13px;color:var(--text)}
 .icon-btn{width:42px;height:42px;border:none;background:none;cursor:pointer;border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--muted);flex:0 0 42px}
+.icon-btn.on{background:var(--active);color:var(--accent)}
 .icon-btn:hover{background:var(--hover)}
 .icon-btn svg{width:22px;height:22px;fill:currentColor;flex:0 0 auto}
 .text-btn{height:32px;padding:0 12px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:8px;cursor:pointer;font-size:13px;flex:0 0 auto;transition:background .15s}
@@ -258,6 +259,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
   <symbol id="i-folder" viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></symbol>
   <symbol id="i-mail" viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></symbol>
   <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 12h-4c0 1.66-1.34 3-3 3s-3-1.34-3-3H5V5h14v10z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></symbol>
   <symbol id="i-chev-down" viewBox="0 0 24 24"><path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></symbol>
   <symbol id="i-chev-right" viewBox="0 0 24 24"><path d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6-6-6z"/></symbol>
   <symbol id="i-open-full" viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></symbol>
@@ -275,6 +277,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
     <svg class="search-ic"><use href="#i-search"/></svg>
     <input id="searchInput" placeholder="搜索邮件（主题/发件人/关键字）" oninput="onSearch(this.value)">
   </div>
+  <button class="icon-btn" id="unreadFilterBtn" onclick="toggleUnreadOnly()" title="只看未读"><svg><use href="#i-inbox"/></svg></button>
+  <button class="icon-btn" onclick="markAllRead()" title="全部标记已读"><svg><use href="#i-check"/></svg></button>
   <button class="icon-btn" onclick="loadInbox(true)" title="刷新"><svg><use href="#i-refresh"/></svg></button>
   <button class="icon-btn" onclick="toggleSettings()" title="设置"><svg><use href="#i-settings"/></svg></button>
   <button class="avatar" id="avatarBtn" onclick="toggleAccDropdown()">U</button>
@@ -500,17 +504,45 @@ function applySort(){
 
 // 搜索筛选（关键词）
 let _searchTerm='';
+let _unreadOnly=false;
 function onSearch(v){
   _searchTerm=(v||'').trim().toLowerCase();
   renderList();
 }
-// 应用筛选，返回过滤后的邮件
+// 应用筛选，返回过滤后的邮件（搜索词 + 只看未读）
 function applyFilter(list){
-  if(!_searchTerm)return list;
-  return list.filter(function(m){
-    const hay=(m.from+'\u0001'+m.subject+'\u0001'+(m.preview||'')+'\u0001'+(m.to||'')+'\u0001'+(m.cc||'')).toLowerCase();
-    return hay.includes(_searchTerm);
-  });
+  let out=list;
+  if(_unreadOnly){out=out.filter(function(m){return m.is_read===false;});}
+  if(_searchTerm){
+    const t=_searchTerm;
+    out=out.filter(function(m){
+      const hay=(m.from+'\u0001'+m.subject+'\u0001'+(m.preview||'')+'\u0001'+(m.to||'')+'\u0001'+(m.cc||'')).toLowerCase();
+      return hay.includes(t);
+    });
+  }
+  return out;
+}
+function toggleUnreadOnly(){
+  _unreadOnly=!_unreadOnly;
+  const btn=document.getElementById('unreadFilterBtn');
+  if(btn)btn.classList.toggle('on',_unreadOnly);
+  document.getElementById('topTitle').textContent = _unreadOnly ? '未读邮件' : (curAccount==='all'?'全部收件箱':(accounts.find(x=>x.email===curAccount)?.display_name||curAccount));
+  renderList();
+}
+async function markAllRead(){
+  const unread=mails.filter(m=>m.is_read===false);
+  if(unread.length===0){toast('没有未读邮件');return;}
+  if(!confirm('将 '+unread.length+' 封未读邮件全部标记为已读？'))return;
+  let done=0;
+  for(const m of unread){
+    m.is_read=true;
+    try{
+      await fetch('/api/mark_read',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:m.account,folder:m.folder||curFolder,seq:m.uid})});
+      done++;
+    }catch(e){}
+  }
+  renderList();
+  toast('已标记 '+done+' 封为已读',false,true);
 }
 
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
@@ -748,7 +780,7 @@ function renderList(){
   const bc=document.getElementById('bottombarCount');
   if(bc)bc.textContent=filtered.length+' 封邮件';
   if(filtered.length===0){
-    el.innerHTML='<div class="empty">'+( _searchTerm?'🔍 没有匹配的邮件':'📭 没有邮件')+'</div>';
+    el.innerHTML='<div class="empty">'+(_searchTerm?'🔍 没有匹配的邮件':(_unreadOnly?'✅ 没有未读邮件':'📭 没有邮件'))+'</div>';
     return;
   }
   el.innerHTML=filtered.map((m,i)=>{
@@ -800,6 +832,12 @@ function resetPaging(){
 async function openMail(i){
   const m=mails[i];if(!m)return;
   _curMailIndex=i;
+  // 打开即标已读（本地立即更新 + 后台同步服务器 \Seen）
+  if(m.is_read===false){
+    m.is_read=true;
+    renderList();
+    fetch('/api/mark_read',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:m.account,folder:m.folder||curFolder,seq:m.uid})}).catch(()=>{});
+  }
   const rd=document.getElementById('reader');
   const body=document.getElementById('readerBody');
   document.getElementById('readerTitle').textContent=m.subject;
