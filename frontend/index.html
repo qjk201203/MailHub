@@ -14,7 +14,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
 /* 顶栏 */
 .topbar{height:56px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 8px;flex:0 0 56px;gap:4px;position:relative;z-index:10;box-shadow:var(--shadow)}
 .top-logo{width:28px;height:28px;flex:0 0 28px;margin:0 6px}
-.searchbox{flex:1;min-width:0;max-width:380px;display:flex;align-items:center;gap:6px;background:var(--surface-2);border:1px solid var(--border);border-radius:20px;padding:6px 12px;margin:0 6px}
+.searchbox{flex:1;min-width:0;max-width:380px;display:none;align-items:center;gap:6px;background:var(--surface-2);border:1px solid var(--border);border-radius:20px;padding:6px 12px;margin:0 6px}
 .searchbox .search-ic{width:16px;height:16px;fill:var(--muted);flex:0 0 16px}
 .searchbox input{flex:1;min-width:0;border:none;outline:none;background:transparent;font-size:13px;color:var(--text)}
 .icon-btn{width:42px;height:42px;border:none;background:none;cursor:pointer;border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--muted);flex:0 0 42px}
@@ -32,6 +32,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
 /* 桌面端：显示标题，并对齐到邮件列表（排序）上方 */
 @media (min-width:900px){
   .topbar .title{display:inline-block;flex:1;margin-left:96px;padding-left:0}
+  .topbar .searchbox{display:flex}
 }
 .avatar{width:34px;height:34px;border-radius:50%;background:var(--avatar-bg);color:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:600;cursor:pointer;border:none;font-size:15px;overflow:hidden;flex:0 0 34px}
 .avatar img{width:100%;height:100%;object-fit:cover;border-radius:50%}
