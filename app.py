@@ -553,6 +553,27 @@ def mark_unread(account_email, folder, seq):
         a.logout()
 
 
+def toggle_flag(account_email, folder, seq, flag):
+    """给某封邮件加/删星标（\\Flagged）。flag=True 加星，flag=False 取消星标。"""
+    acc = storage.get_account(account_email)
+    if not acc:
+        return False
+    a = MailAccount(acc['email'], acc['password'], acc['imap_host'], acc['imap_port'], acc.get('imap_ssl', 1))
+    try:
+        a.connect()
+        try:
+            a.select_folder(folder, readonly=False)
+        except Exception:
+            return False
+        op = '+FLAGS' if flag else '-FLAGS'
+        typ, data = a.conn.store(seq, op, '(\\Flagged)')
+        return typ == 'OK'
+    except Exception:
+        return False
+    finally:
+        a.logout()
+
+
 def delete_mail(account_email, folder, seq):
     """删除指定账号某文件夹里的一封邮件（\\Deleted + EXPUNGE）。"""
     acc = storage.get_account(account_email)
@@ -906,6 +927,14 @@ class Handler(BaseHTTPRequestHandler):
             folder = data.get('folder') or 'INBOX'
             seq = str(data.get('seq') or '')
             ok = delete_mail(account, folder, seq)
+            self._send(200, {'ok': ok})
+
+        elif path == '/api/mail/flag':
+            account = (data.get('account') or '').strip()
+            folder = data.get('folder') or 'INBOX'
+            seq = str(data.get('seq') or '')
+            flag = bool(data.get('flag'))
+            ok = toggle_flag(account, folder, seq, flag)
             self._send(200, {'ok': ok})
 
         else:

@@ -134,6 +134,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,Roboto,'Segoe UI','PingFang SC
 .mailrow:hover .read-toggle{opacity:1}
 .mailrow .read-toggle:hover{color:var(--accent)}
 .mailrow .mail-check{flex:0 0 auto;width:16px;height:16px;cursor:pointer;margin-top:2px;accent-color:var(--accent)}
+.mailrow .star-toggle{flex:0 0 auto;border:none;background:none;cursor:pointer;font-size:16px;color:var(--muted);padding:2px 4px;line-height:1;opacity:0;transition:opacity .15s}
+.mailrow:hover .star-toggle{opacity:1}
+.mailrow .star-toggle:hover{color:#f5b301}
 
 /* 写邮件按钮 */
 .fab{position:fixed;bottom:22px;right:18px;width:56px;height:56px;border-radius:16px;background:var(--accent);color:#fff;border:none;cursor:pointer;box-shadow:0 3px 12px rgba(11,87,208,.4);z-index:30;display:flex;align-items:center;justify-content:center}
@@ -571,6 +574,15 @@ async function toggleRead(i){
     .catch(()=>{});
 }
 
+// 单封邮件切换 星标
+async function toggleStar(i){
+  const m=mails[i];if(!m)return;
+  m.flagged = !m.flagged;
+  renderList();
+  fetch('/api/mail/flag',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:m.account,folder:m.folder||curFolder,seq:m.uid,flag:m.flagged})})
+    .catch(()=>{});
+}
+
 // 勾选/取消勾选单封邮件
 function toggleSelect(i){
   const m=mails[i];if(!m)return;
@@ -906,6 +918,7 @@ function renderList(){
         <div class="preview">${esc(m.preview||'')}</div>
       </div>
       ${curAccount==='all'?`<span class="badge">${esc(m.account_name)}</span>`:''}
+      <button class="star-toggle" title="${m.flagged?'取消星标':'加星标'}" onclick="event.stopPropagation();toggleStar(${i})">${m.flagged?'★':'☆'}</button>
       <button class="read-toggle" title="${unread?'标为已读':'标为未读'}" onclick="event.stopPropagation();toggleRead(${i})">${unread?'●':'○'}</button>
     </div>`;
   }).join('');
@@ -1144,7 +1157,7 @@ function exec(cmd, val){
 let _attachments=[];
 
 function addAttachments(files){
-  if(!files)return;
+  if(!files || files.length===0)return;
   for(const f of files){
     const reader=new FileReader();
     reader.onload=function(e){
@@ -1154,6 +1167,8 @@ function addAttachments(files){
     };
     reader.readAsDataURL(f);
   }
+  // 清空 input，允许下次重复选择同一文件（否则 onchange 不触发）
+  document.getElementById('attInput').value='';
 }
 function renderAtts(){
   const el=document.getElementById('attList');
@@ -1264,9 +1279,17 @@ async function deleteCurrentMail(){
     const d=await r.json();
     if(d.ok){
       toast('已删除');
-      closeReader();
-      // 刷新列表
-      loadInbox(true);
+      // 从本地列表移除这封
+      mails.splice(_curMailIndex,1);
+      if(mails.length===0){
+        closeReader();
+        loadInbox(true);
+      }else{
+        // 自动打开下一封（前移后同索引即原下一封），没有下一封则打开上一封
+        const nextIdx = Math.min(_curMailIndex, mails.length-1);
+        openMail(nextIdx);
+        loadInbox(false);
+      }
     }else{
       toast('删除失败',true);
     }
