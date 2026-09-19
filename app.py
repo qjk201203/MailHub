@@ -35,13 +35,16 @@ except ImportError:
     import storage
     from imap_client import MailAccount
 
+# 微软官方为 Mozilla Thunderbird 分配的官方已认证 Public Client ID (经微软认证支持所有个人 consumer 账号)
+DEFAULT_MS_CLIENT_ID = '9e5f94bc-e8a4-4e73-b8be-63364c29d753'
+
 def _get_ms_client_id():
-    """获取当前生效的 Microsoft Client ID"""
-    return storage.get_setting('ms_client_id', os.environ.get('MAILHUB_MS_CLIENT_ID', '')).strip()
+    """获取当前生效的 Microsoft Client ID（优先用户自定义，未配置时使用官方认证公共 ID）"""
+    return storage.get_setting('ms_client_id', os.environ.get('MAILHUB_MS_CLIENT_ID', DEFAULT_MS_CLIENT_ID)).strip() or DEFAULT_MS_CLIENT_ID
 
 MS_AUTH_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize'
 MS_TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
-MS_SCOPES = 'openid profile offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send'
+MS_SCOPES = 'offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send'
 
 
 def _get_valid_oauth_token(acc):

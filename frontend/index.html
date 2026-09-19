@@ -1647,19 +1647,11 @@ body.sidebar-collapsed .account-folders-list {
           <svg style="width:24px; height:24px" viewBox="0 0 24 24"><path fill="#fff" d="M21.5 2h-19C1.1 2 0 3.1 0 4.5v15C0 20.9 1.1 22 2.5 22h19c1.4 0 2.5-1.1 2.5-2.5v-15C24 3.1 22.9 2 21.5 2zM12 13.5L3.5 8h17L12 13.5z"/></svg>
           <div style="font-weight:600; font-size:15px">微软 Outlook / Hotmail 一键登录</div>
         </div>
-        <div style="font-size:12.5px; opacity:0.9; margin-bottom:12px; line-height:1.4">
-          针对微软 2024 最新 OAuth2.0 现代身份验证要求，填入您在 Azure 创建的 Client ID 即可一键安全授权。
+        <div style="font-size:12.5px; opacity:0.9; margin-bottom:14px; line-height:1.4">
+          针对微软 2024 最新政策要求，已内置官方认证的客户端身份，点击下方按钮即可一键登录您的个人 Outlook / Hotmail 账号。
         </div>
 
-        <div style="margin-bottom:10px">
-          <label style="font-size:12px; opacity:0.9; display:block; margin-bottom:4px">Microsoft App Client ID (应用程序 ID)</label>
-          <input id="msClientIdInput" placeholder="例如：9b79486c-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="width:100%; padding:8px 10px; border:none; border-radius:6px; font-size:13px; font-family:monospace; box-sizing:border-box; color:#000">
-          <div style="font-size:11px; opacity:0.8; margin-top:4px">
-            💡 提示：在 <a href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" style="color:#a8c7fa; text-decoration:underline">Azure Portal 应用注册</a> 中免费新建应用，类型选“任何组织与个人账号”，重定向 URL 设为 Mobile/Desktop 即可获取此 ID。
-          </div>
-        </div>
-
-        <button type="button" onclick="startMicrosoftOAuth()" style="width:100%; padding:10px; background:#fff; color:#0078d4; border:none; border-radius:8px; font-weight:700; font-size:13.5px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px; box-shadow:0 2px 6px rgba(0,0,0,0.15)">
+        <button type="button" onclick="startMicrosoftOAuth()" style="width:100%; padding:11px; background:#fff; color:#0078d4; border:none; border-radius:8px; font-weight:700; font-size:14px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px; box-shadow:0 2px 6px rgba(0,0,0,0.15)">
           <svg style="width:18px; height:18px" viewBox="0 0 23 23"><path fill="#f35325" d="M1 1h10v10H1z"/><path fill="#81bc06" d="M12 1h10v10H12z"/><path fill="#05a6f0" d="M1 12h10v10H1z"/><path fill="#ffba08" d="M12 12h10v10H12z"/></svg>
           使用 Microsoft 账号一键登录
         </button>
@@ -3279,20 +3271,6 @@ function closeMsOAuthModal() {
 }
 
 async function startMicrosoftOAuth() {
-  const cidInput = document.getElementById('msClientIdInput');
-  const clientId = (cidInput ? cidInput.value.trim() : '');
-
-  if (clientId) {
-    // 优先保存 Client ID
-    try {
-      await fetch('/api/settings', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ ms_client_id: clientId })
-      });
-    } catch (e) {}
-  }
-
   try {
     const res = await fetch(`/api/oauth/ms/auth_url?redirect_uri=${encodeURIComponent(_msRedirectUri)}`);
     const data = await res.json();
@@ -3301,7 +3279,7 @@ async function startMicrosoftOAuth() {
       document.getElementById('msOAuthModal').classList.add('open');
       _msOAuthWindow = window.open(data.auth_url, '_blank', 'width=600,height=700');
     } else {
-      alert(data.error || '获取微软授权地址失败，请检查是否填写了 Client ID');
+      alert(data.error || '获取微软授权地址失败');
     }
   } catch (e) {
     alert('请求失败，请检查网络或后端状态');
