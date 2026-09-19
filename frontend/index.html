@@ -1432,6 +1432,7 @@ body.sidebar-collapsed .account-folders-list {
             <option value="2000">最近 2000 封邮件全文</option>
             <option value="-1">近一年（全量同步）</option>
           </select>
+          <div id="syncRangeHint" style="font-size:12px; color:var(--md-primary)"></div>
           <div id="syncStatusTip" style="font-size:12px; color:var(--md-outline)"></div>
         </div>
       </div>
@@ -1901,6 +1902,9 @@ function renderMailList() {
       </div>
     `;
   }).join('');
+
+  // 同步批量操作栏（选中数 > 0 时显示）与全选框状态
+  updateBatchToolbar();
 }
 
 // 阅读页
@@ -2596,6 +2600,197 @@ function deleteCurrentMail() {
   if (curMailIndex >= 0) {
     deleteMailItem(curMailIndex);
     closeReader();
+  }
+}
+
+/* ==================== 批量选择与批量操作 ==================== */
+
+/** 刷新批量操作栏的显示状态与全选框 */
+function updateBatchToolbar() {
+  const group = document.getElementById('batchActionGroup');
+  if (group) group.style.display = selectedMails.size > 0 ? 'flex' : 'none';
+
+  const all = document.getElementById('selectAllCheckbox');
+  if (all) {
+    const visible = _currentFilteredMails();
+    const picked = visible.filter(m => selectedMails.has(m.uid)).length;
+    all.checked = visible.length > 0 && picked === visible.length;
+    all.indeterminate = picked > 0 && picked < visible.length;
+  }
+}
+
+/** 取当前筛选后实际显示的邮件（与 renderMailList 的过滤规则一致） */
+function _currentFilteredMails() {
+  let list = mails;
+  if (curQuickFilter === 'unread') list = list.filter(m => !m.is_read);
+  else if (curQuickFilter === 'starred') list = list.filter(m => !!m.flagged);
+  else if (curQuickFilter === 'attach') list = list.filter(m => !!m.has_attachment);
+  if (searchTerm) {
+    list = list.filter(m => {
+      const text = `${m.from} ${m.subject} ${m.preview || ''}`.toLowerCase();
+      return text.includes(searchTerm);
+    });
+  }
+  return list;
+}
+
+/** 全选 / 取消全选（作用于当前筛选结果） */
+function toggleSelectAll() {
+  const visible = _currentFilteredMails();
+  const allPicked = visible.length > 0 && visible.every(m => selectedMails.has(m.uid));
+  if (allPicked) {
+    visible.forEach(m => selectedMails.delete(m.uid));
+  } else {
+    visible.forEach(m => selectedMails.add(m.uid));
+  }
+  renderMailList();
+}
+
+/** 勾选 / 取消勾选单封 */
+function toggleSelectOne(uid) {
+  if (selectedMails.has(uid)) selectedMails.delete(uid);
+  else selectedMails.add(uid);
+  renderMailList();
+}
+
+/** 取选中邮件对应的对象列表 */
+function _selectedMailObjects() {
+  return mails.filter(m => selectedMails.has(m.uid));
+}
+
+/** 批量标记已读 / 未读 */
+async function batchMarkRead(isRead) {
+  const target = _selectedMailObjects();
+  if (!target.length) return;
+
+  const label = isRead ? '已读' : '未读';
+  for (const m of target) {
+    m.is_read = !!isRead;
+    if (isRead) _localRead.add(_mailKey(m));
+    else _localRead.delete(_mailKey(m));
+  }
+  selectedMails.clear();
+  renderMailList();
+
+  // 并发提交，避免逐封串行等待（Gmail 尤其慢）
+  await Promise.all(target.map(m =>
+    fetch(isRead ? '/api/mark_read' : '/api/mark_unread', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({account: m.account, folder: m.folder || curFolder, seq: m.uid})
+    }).catch(() => {})
+  ));
+  loadUnreadCounts();
+}
+
+/** 批量删除 */
+async function batchDelete() {
+  const target = _selectedMailObjects();
+  if (!target.length) return;
+  if (!confirm(`确定删除选中的 ${target.length} 封邮件？此操作不可撤销。`)) return;
+
+  const uids = new Set(target.map(m => m.uid));
+  // 先从列表移除，界面立即反馈
+  mails = mails.filter(m => !uids.has(m.uid));
+  selectedMails.clear();
+  renderMailList();
+
+  await Promise.all(target.map(m =>
+    fetch('/api/mail/delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({account: m.account, folder: m.folder || curFolder, seq: m.uid})
+    }).catch(() => {})
+  ));
+  loadUnreadCounts();
+}
+
+/* ==================== 阅读页 / 写信相关 ==================== */
+
+/** 阅读页切换到「标为已读 / 未读」 */
+function toggleCurrentRead() {
+  if (curMailIndex < 0) return;
+  toggleReadItem(curMailIndex);
+}
+
+/** 写信附件选择回调 */
+function onFilesSelected(files) {
+  if (!files || !files.length) return;
+  const MAX = 20 * 1024 * 1024;   // 单文件 20MB 上限
+  Array.prototype.forEach.call(files, file => {
+    if (file.size > MAX) {
+      alert(`「${file.name}」超过 20MB，已跳过`);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      // dataURL → base64（去掉 data:xxx;base64, 前缀）
+      const dataUrl = String(reader.result || '');
+      const comma = dataUrl.indexOf(',');
+      const b64 = comma >= 0 ? dataUrl.slice(comma + 1) : '';
+      composerAttachments.push({
+        name: file.name,
+        content_type: file.type || 'application/octet-stream',
+        size: file.size,
+        data: b64
+      });
+      renderComposerAttachments();
+    };
+    reader.onerror = () => alert(`读取「${file.name}」失败`);
+    reader.readAsDataURL(file);
+  });
+  // 允许再次选择同一文件
+  const input = document.getElementById('composerFileInput');
+  if (input) input.value = '';
+}
+
+/** 渲染写信窗口的附件列表 */
+function renderComposerAttachments() {
+  const box = document.getElementById('composerAttList');
+  if (!box) return;
+  if (!composerAttachments.length) {
+    box.innerHTML = '';
+    box.style.display = 'none';
+    return;
+  }
+  box.style.display = 'flex';
+  box.innerHTML = composerAttachments.map((a, i) => `
+    <span class="att-badge" style="cursor:default">
+      <span>📄</span>
+      <span style="max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">${escapeHtml(a.name)}</span>
+      <span style="color:var(--md-outline)">(${Math.max(1, Math.round(a.size / 1024))} KB)</span>
+      <span onclick="removeComposerAttachment(${i})" style="cursor:pointer; color:var(--md-danger); font-weight:700">✕</span>
+    </span>
+  `).join('');
+}
+
+function removeComposerAttachment(i) {
+  composerAttachments.splice(i, 1);
+  renderComposerAttachments();
+}
+
+/* ==================== 设置：同步范围 ==================== */
+
+/** 保存同步范围并触发后台同步 */
+async function updateSyncRange(val) {
+  const range = parseInt(val, 10);
+  if (isNaN(range)) return;
+  const hint = document.getElementById('syncRangeHint');
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sync_range: range})
+    });
+    const d = await res.json();
+    if (hint) {
+      hint.textContent = range === 0
+        ? '已关闭后台同步（仅在线按需加载）'
+        : '后台同步已启动，可在下方查看进度…';
+    }
+    if (typeof refreshSyncStatus === 'function') refreshSyncStatus(d.sync_status);
+  } catch (e) {
+    if (hint) hint.textContent = '保存失败，请重试';
   }
 }
 </script>
