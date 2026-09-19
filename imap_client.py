@@ -174,25 +174,39 @@ class MailAccount:
                     proxy = storage.get_setting('proxy_url', '').strip()
                 except Exception:
                     pass
-        if self.imap_ssl == 1:
-            if proxy:
-                cls = type('ProxySSL', (_ProxyIMAP4_SSL,), {'_proxy': proxy})
-                self.conn = cls(self.imap_host, self.imap_port)
+
+        # 尝试建立连接，如果配置了代理且代理连接被拒绝或超时，自动降级为直连
+        def _build_conn():
+            if self.imap_ssl == 1:
+                if proxy:
+                    try:
+                        cls = type('ProxySSL', (_ProxyIMAP4_SSL,), {'_proxy': proxy})
+                        return cls(self.imap_host, self.imap_port)
+                    except (socket.error, OSError, Exception):
+                        pass
+                return imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
+            elif self.imap_ssl == 2:
+                if proxy:
+                    try:
+                        cls = type('ProxyPlain', (_ProxyIMAP4,), {'_proxy': proxy})
+                        c = cls(self.imap_host, self.imap_port)
+                        c.starttls()
+                        return c
+                    except (socket.error, OSError, Exception):
+                        pass
+                c = imaplib.IMAP4(self.imap_host, self.imap_port)
+                c.starttls()
+                return c
             else:
-                self.conn = imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
-        elif self.imap_ssl == 2:
-            if proxy:
-                cls = type('ProxyPlain', (_ProxyIMAP4,), {'_proxy': proxy})
-                self.conn = cls(self.imap_host, self.imap_port)
-            else:
-                self.conn = imaplib.IMAP4(self.imap_host, self.imap_port)
-            self.conn.starttls()
-        else:
-            if proxy:
-                cls = type('ProxyPlain', (_ProxyIMAP4,), {'_proxy': proxy})
-                self.conn = cls(self.imap_host, self.imap_port)
-            else:
-                self.conn = imaplib.IMAP4(self.imap_host, self.imap_port)
+                if proxy:
+                    try:
+                        cls = type('ProxyPlain', (_ProxyIMAP4,), {'_proxy': proxy})
+                        return cls(self.imap_host, self.imap_port)
+                    except (socket.error, OSError, Exception):
+                        pass
+                return imaplib.IMAP4(self.imap_host, self.imap_port)
+
+        self.conn = _build_conn()
         
         if any(x in self.email_addr for x in ('163.com', '126.com', 'yeah.net')):
             try:
