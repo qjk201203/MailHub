@@ -23,7 +23,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email.header import Header
 from email.utils import formataddr
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 try:
@@ -158,6 +158,28 @@ def strip_html(s):
     return s.strip()
 
 
+def _refresh_latest_async(account_email, folder='INBOX', n=50):
+    """后台增量拉取最近 n 封邮件头并写入缓存（点刷新时调用，不阻塞页面）"""
+    acc = storage.get_account(account_email)
+    if not acc:
+        return
+    a = MailAccount(acc['email'], acc['password'],
+                    acc['imap_host'], acc['imap_port'], acc.get('imap_ssl', 1))
+    try:
+        a.connect()
+        mails = a.fetch_recent(folder, n, light=True)
+        for m in mails:
+            m['account'] = acc['email']
+            m['account_name'] = acc['display_name'] or acc['email']
+            m['folder'] = folder
+        if mails:
+            storage.save_mail_cache(account_email, folder, mails)
+    except Exception:
+        pass
+    finally:
+        a.logout()
+
+
 def _fetch_account_mails(acc, folder='INBOX', limit=50):
     """单账号拉取邮件列表"""
     a = MailAccount(acc['email'], acc['password'],
@@ -204,7 +226,13 @@ def _prefetch_bodies(account_email, folder, mids):
 
 
 def aggregate_all(account=None, folder='INBOX', limit=50, force=False, offset=0):
-    """多账号并发聚合取信（支持全量加载与深度翻页）"""
+    """多账号并发聚合取信（支持全量加载与深度翻页）
+
+    性能策略：
+    - 正常请求：只读本地 SQLite 缓存（毫秒级）
+    - force=1（点刷新）：只从远端拉最近 FORCE_N 封头部，避免 5000 封拉取导致长时间卡死
+      且拉取在后台线程进行，本次请求立即返回缓存内容，不阻塞页面
+    """
     accounts = storage.list_accounts()
     if account:
         accounts = [a for a in accounts if a['email'] == account]
@@ -215,15 +243,15 @@ def aggregate_all(account=None, folder='INBOX', limit=50, force=False, offset=0)
     # 优先从本地数据库载入全量缓存，按日期倒序
     for acc in accounts:
         cached = storage.load_mail_cache(acc['email'], folder, limit=5000)
-        if cached and not force:
+        if cached:
             flat.extend(cached)
         else:
+            # 完全没有缓存（首次使用）才同步等待拉取
             need_fetch_accounts.append(acc)
 
-    # 若无缓存或触发了强制刷新，使用并发线程池从远端拉取最新大批量索引
     if need_fetch_accounts:
         futures = {
-            _EXECUTOR.submit(_fetch_account_mails, acc, folder, 5000): acc
+            _EXECUTOR.submit(_fetch_account_mails, acc, folder, 300): acc
             for acc in need_fetch_accounts
         }
         for fut in as_completed(futures):
@@ -235,6 +263,11 @@ def aggregate_all(account=None, folder='INBOX', limit=50, force=False, offset=0)
                 flat.extend(mails)
             except Exception:
                 pass
+
+    # 点「刷新」时：后台异步增量拉取最新邮件，不阻塞当前响应
+    if force and not need_fetch_accounts:
+        for acc in accounts:
+            _EXECUTOR.submit(_refresh_latest_async, acc['email'], folder)
 
     # 全局按邮件日期严格倒序排列（用时间戳排序，兼容旧缓存的原始 Date 字符串）
     from imap_client import _parse_date as _pd
@@ -276,9 +309,10 @@ def aggregate_all(account=None, folder='INBOX', limit=50, force=False, offset=0)
     paged = flat[offset:offset + limit]
     result = {'all_mails': paged, 'total': total_count}
 
-    # 后台异步预拉取当前可视页的正文
+    # 后台异步预拉取当前可视页的正文（仅未缓存的）
     for acc in accounts:
-        mids = [m for m in paged if m.get('account') == acc['email']]
+        mids = [m for m in paged if m.get('account') == acc['email']
+                and m.get('uid') and not storage.load_body(acc['email'], folder, m.get('uid'))]
         if mids:
             _EXECUTOR.submit(_prefetch_bodies, acc['email'], folder, mids)
 
@@ -1008,7 +1042,9 @@ def main():
     storage.init_db()
     start_unread_refresher()
     start_auto_sync()
-    server = HTTPServer(('0.0.0.0', PORT), Handler)
+    # 多线程服务器：避免单个慢请求（如 Gmail 同步）阻塞整站
+    server = ThreadingHTTPServer(('0.0.0.0', PORT), Handler)
+    server.daemon_threads = True
     print('MailHub 已启动： http://127.0.0.1:%d' % PORT)
     server.serve_forever()
 

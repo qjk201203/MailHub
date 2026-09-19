@@ -1633,22 +1633,49 @@ async function loadUnreadCounts() {
 // 邮件加载与列表渲染 (支持翻页与全量加载)
 async function loadInbox(force = false) {
   const listEl = document.getElementById('mailList');
-  listEl.innerHTML = '<div style="padding:40px; text-align:center; color:var(--md-outline)">正在从多邮箱并发同步...</div>';
-  
+  // 刷新时不要清空列表，避免「卡住」的观感；首次加载才显示占位
+  if (!mails.length) {
+    listEl.innerHTML = '<div style="padding:40px; text-align:center; color:var(--md-outline)">正在加载邮件...</div>';
+  }
+
   const offset = (curPage - 1) * pageSize;
   let url = `/api/inbox?folder=${encodeURIComponent(curFolder)}&limit=${pageSize}&offset=${offset}`;
   if (curAccount !== 'all') url += `&account=${encodeURIComponent(curAccount)}`;
   if (force) url += '&force=1';
-  
+
+  // 加超时，避免网络异常时无限转圈
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(timer);
     const data = await res.json();
     mails = data.all_mails || [];
     totalMailCount = data.total || mails.length;
     updatePagingControls();
     renderMailList();
+
+    // 点刷新：后端在后台增量同步，稍后再取一次拿到最新邮件
+    if (force) {
+      setTimeout(async () => {
+        try {
+          const r2 = await fetch(`/api/inbox?folder=${encodeURIComponent(curFolder)}&limit=${pageSize}&offset=${offset}` + (curAccount !== 'all' ? `&account=${encodeURIComponent(curAccount)}` : ''));
+          const d2 = await r2.json();
+          if (d2.all_mails && d2.all_mails.length) {
+            mails = d2.all_mails;
+            totalMailCount = d2.total || mails.length;
+            updatePagingControls();
+            renderMailList();
+          }
+        } catch (e) {}
+      }, 4000);
+    }
   } catch (e) {
-    listEl.innerHTML = '<div style="padding:40px; text-align:center; color:var(--md-danger)">加载邮件失败，请重试</div>';
+    clearTimeout(timer);
+    if (!mails.length) {
+      listEl.innerHTML = '<div style="padding:40px; text-align:center; color:var(--md-danger)">加载邮件失败，请重试</div>';
+    }
   }
 }
 
