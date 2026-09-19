@@ -66,50 +66,110 @@
 
 ## 运行
 
+### 方式一：Docker（推荐，一键部署）
+
 ```bash
-cd mailhub
-python3 app.py
+# 1. 克隆仓库
+git clone https://github.com/qjk201203/MailHub.git
+cd MailHub
+
+# 2. 配置（可选：设置访问密码与代理）
+cp .env.example .env
+vi .env          # 填 MAILHUB_PASSWORD 和 MAILHUB_PROXY
+
+# 3. 一键启动
+docker compose up -d --build
 ```
 
-启动后访问：`http://127.0.0.1:20111`（绑定 `0.0.0.0`，NAS 局域网内其他设备也可访问）
+启动后访问：`http://你的机器IP:20111`
+
+查看日志 / 停止：
+
+```bash
+docker compose logs -f      # 看日志
+docker compose down         # 停止
+docker compose up -d        # 启动
+```
+
+**数据持久化**：账号与邮件缓存存放在 `./data/mailhub.db`（宿主机当前目录下），
+`docker compose down` 后再 `up` 不会丢数据。
+
+> **关于网络模式**：`docker-compose.yml` 使用 `network_mode: host`，容器内 `127.0.0.1`
+> 就是宿主机，因此可以直接复用宿主机上的代理（如 mihomo/clash 的 7890 端口）。
+> 如果你的环境不方便用 host 模式，改成端口映射亦可：
+> ```yaml
+> # 把 network_mode: host 删掉，换成：
+> ports:
+>   - "20111:20111"
+> ```
+> 但此时 `MAILHUB_PROXY` 需写宿主机 IP（如 `http://192.168.1.10:7890`），
+> 因为容器内的 `127.0.0.1` 指向容器自己。
+
+#### 不用 compose，直接 docker 命令
+
+```bash
+git clone https://github.com/qjk201203/MailHub.git && cd MailHub
+docker build -t mailhub .
+
+docker run -d --name mailhub --restart always \
+  -p 20111:20111 \
+  -v $(pwd)/data:/app/data \
+  -e MAILHUB_PASSWORD=你的访问密码 \
+  -e MAILHUB_PROXY=http://192.168.1.10:7890 \
+  -e TZ=Asia/Shanghai \
+  mailhub
+```
+
+> 注意：用 `-p` 端口映射时，`MAILHUB_PROXY` 里的 `127.0.0.1` 指的是**容器自己**，
+> 必须改成宿主机 IP，否则代理走不通（favicon 会退化为首字母，Gmail 可能超时）。
+
+---
+
+### 方式二：直接跑 Python（无需 Docker）
+
+要求：Python 3.8+，**无任何第三方依赖**（纯标准库）。
+
+```bash
+git clone https://github.com/qjk201203/MailHub.git
+cd MailHub
+MAILHUB_PASSWORD=你的访问密码 python3 app.py
+```
+
+启动后访问：`http://127.0.0.1:20111`（绑定 `0.0.0.0`，局域网内其他设备也可访问）
+
+---
 
 ### 环境变量
 
 | 变量 | 说明 | 默认 |
 |------|------|------|
-| `MAILHUB_PASSWORD` | 访问密码，设置后启用登录鉴权（强烈建议设置） | 空（不鉴权） |
-| `MAILHUB_PROXY` | favicon 代理地址（如 `http://127.0.0.1:7890`） | 空（直连） |
+| `MAILHUB_PASSWORD` | 访问密码，设置后启用登录鉴权（**强烈建议设置**） | 空（不鉴权） |
+| `MAILHUB_PROXY` | 代理地址，用于 Gmail 等海外邮箱与 favicon（如 `http://127.0.0.1:7890`） | 空（直连） |
 | `MAILHUB_DATA_DIR` | 数据/数据库目录 | 脚本同目录 |
+| `TZ` | 时区（影响邮件时间显示与排序） | 系统默认 |
 
-### Docker
-
-```bash
-docker build -t mailhub .
-docker run -d -p 20111:20111 \
-  -v /你的数据目录:/app/data \
-  -e MAILHUB_PASSWORD=你的访问密码 \
-  -e MAILHUB_PROXY=http://127.0.0.1:7890 \
-  mailhub
-```
-
-数据目录由环境变量 `MAILHUB_DATA_DIR` 指定（默认脚本同目录），账号数据库 `mailhub.db` 存于此。
+数据目录由 `MAILHUB_DATA_DIR` 指定，账号数据库 `mailhub.db` 存于此。
 
 ---
 
 ## 目录结构
 
 ```
-mailhub/
-├── app.py            # Web 服务（http.server 标准库）+ API
-├── imap_client.py    # IMAP 客户端（含 163 的 ID 命令、UTF-7 解码）
-├── storage.py        # SQLite 存储（账号 / 邮件缓存 / 正文缓存 / 设置）
-├── config.py         # 邮箱服务器预设
+MailHub/
+├── app.py              # Web 服务（http.server 标准库）+ API
+├── imap_client.py      # IMAP 客户端（含 163 的 ID 命令、UTF-7 解码、代理隧道）
+├── storage.py          # SQLite 存储（账号 / 邮件缓存 / 正文缓存 / 设置）
+├── config.py           # 邮箱服务器预设
 ├── frontend/
-│   └── index.html    # 前端页面（独立文件，改界面不需要动 app.py）
-├── Dockerfile        # Docker 部署
-├── .gitignore        # 排除敏感文件（数据库等）
-├── LICENSE           # MIT 许可
-└── mailhub.db        # 账号数据库（运行后自动生成，不入库）
+│   └── index.html      # 前端页面（独立文件，改界面不需要动 app.py）
+├── Dockerfile          # Docker 镜像构建
+├── docker-compose.yml  # 一键部署（restart: always）
+├── .env.example        # 环境变量模板
+├── .dockerignore       # 构建上下文排除（防止数据库打进镜像）
+├── .gitignore          # 排除敏感文件（数据库等）
+├── LICENSE             # MIT 许可
+└── data/
+    └── mailhub.db      # 账号数据库（运行后自动生成，不入库）
 ```
 
 ---

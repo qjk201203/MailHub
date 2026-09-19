@@ -18,3 +18,7 @@ Thumbs.db
 *.token
 .env
 .env.*
+!.env.example
+
+# Docker 数据目录（账号 / 缓存）
+data/

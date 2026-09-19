@@ -1,0 +1,19 @@
+services:
+  mailhub:
+    build: .
+    image: mailhub:latest
+    container_name: mailhub
+    restart: always
+    # host 网络：容器内 127.0.0.1 即宿主机，方便直接复用宿主机的代理
+    network_mode: host
+    environment:
+      # 访问密码：强烈建议设置，留空则任何人可访问
+      - MAILHUB_PASSWORD=${MAILHUB_PASSWORD:-}
+      # 代理地址（Gmail 等海外邮箱 + favicon 需要；163/QQ 等国内邮箱自动直连）
+      # host 网络下写 127.0.0.1 即可；没有代理就留空
+      - MAILHUB_PROXY=${MAILHUB_PROXY:-}
+      - MAILHUB_DATA_DIR=/app/data
+      - TZ=Asia/Shanghai
+    volumes:
+      # 数据目录：账号 / 邮件缓存都在这里，务必持久化
+      - ./data:/app/data
