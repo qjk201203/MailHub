@@ -16,4 +16,13 @@ services:
       - TZ=Asia/Shanghai
     volumes:
       # 数据目录：账号 / 邮件缓存都在这里，务必持久化
-      - ./data:/app/data
+      # 用绝对路径，避免相对路径随执行目录变化而指向别处
+      # 默认沿用本机既有数据目录；换机器部署时改成你自己的路径即可
+      - /vol1/1000/Docker/mailhub:/app/data
+      # 源码挂载：改代码后只需重启容器即可生效，无需重建镜像
+      # 镜像里已 COPY 一份作为兜底，这里挂载以源码目录为准
+      - ./app.py:/app/app.py:ro
+      - ./storage.py:/app/storage.py:ro
+      - ./imap_client.py:/app/imap_client.py:ro
+      - ./config.py:/app/config.py:ro
+      - ./frontend:/app/frontend:ro
