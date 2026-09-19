@@ -758,12 +758,10 @@ body.sidebar-collapsed .account-folders-list {
   gap: 12px;
   font-size: 14px;
   transition: background .15s;
-  /* 长邮件时按钮常驻底部，不必翻到页面最下方 */
-  position: sticky;
-  bottom: 0;
+  /* 紧跟邮件正文末尾：邮件多高，这里就在多高之后，
+     不再有被撑开的大片空白，也不必翻一整页才能看到 */
+  margin: 16px 0 24px;
   background: var(--md-surface);
-  box-shadow: 0 -4px 12px rgba(0,0,0,.06);
-  z-index: 5;
 }
 .reader-quick-reply:hover { background: var(--md-hover); color: var(--md-on-surface); }
 
@@ -1997,8 +1995,16 @@ function applyMailZoom() {
 }
 
 /**
- * 在 iframe 内部注入布局样式，使邮件内容服从容器宽度。
- * zoom 百分比通过 CSS zoom 实现（比 transform 更适配 iframe 且高度可测）。
+ * 在 iframe 内部注入布局样式。
+ *
+ * 缩放实现选型：
+ * - transform:scale  → 只做视觉缩放，内部不重排 → 「画中画」观感
+ * - css zoom         → 会重排，但 scrollHeight 返回未缩放值，高度难算 → 底部空白
+ * - 所以这里用「iframe 加宽 + 外层按比例缩小」的组合不可行（iframe 无法被父级缩放而不失真）
+ *
+ * 最终方案：不用任何整体缩放。让邮件内容真正按容器宽度自适应重排
+ * （放开定宽表格/图片），长邮件自然变高，高度测量也就准确了。
+ * zoomPct 仅作为「字号/内容整体缩放」的可选微调，默认 100 即纯自适应。
  */
 function applyInnerLayout(iframe, zoomPct) {
   const wrap = document.getElementById('mailHtmlWrap');
@@ -2011,7 +2017,7 @@ function applyInnerLayout(iframe, zoomPct) {
   }
   if (!doc || !doc.head) return;
 
-  const z = Math.max(30, Math.min(150, zoomPct || 100)) / 100;
+  const z = Math.max(50, Math.min(200, zoomPct || 100)) / 100;
 
   let st = doc.getElementById('mh-layout-style');
   if (!st) {
@@ -2020,24 +2026,30 @@ function applyInnerLayout(iframe, zoomPct) {
     doc.head.appendChild(st);
   }
 
-  // 关键三点：
-  // 1) 去掉邮件自身 min-width / 固定宽度，允许收缩
-  // 2) 图片、表格统一最大宽度 100%，防止撑破
-  // 3) 用 CSS zoom 整体缩放（含布局重算），而非 transform（只做视觉缩放）
+  // 核心：强制邮件内容服从容器宽度，让浏览器原生重排
   st.textContent = `
-    html, body {
+    html {
+      height: auto !important;
+      overflow: visible !important;
+    }
+    body {
       margin: 0 !important;
       padding: 12px !important;
       width: auto !important;
+      max-width: 100% !important;
       min-width: 0 !important;
+      min-height: 0 !important;
+      height: auto !important;
+      overflow: visible !important;
       overflow-x: hidden !important;
       word-wrap: break-word !important;
       overflow-wrap: break-word !important;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
-    /* 邮件里常见的定宽 wrapper，强行放开 */
-    body > *, body table, body div {
+    /* 邮件常见的定宽 wrapper / 表格，统一放开为自适应 */
+    body > * {
       max-width: 100% !important;
+      width: auto !important;
       min-width: 0 !important;
     }
     table {
@@ -2045,7 +2057,14 @@ function applyInnerLayout(iframe, zoomPct) {
       max-width: 100% !important;
       table-layout: auto !important;
     }
-    img, video, svg, canvas {
+    td, th {
+      max-width: 100% !important;
+      word-break: break-word !important;
+    }
+    div, p, span, a {
+      max-width: 100% !important;
+    }
+    img, video, svg, canvas, iframe {
       max-width: 100% !important;
       height: auto !important;
     }
@@ -2054,8 +2073,19 @@ function applyInnerLayout(iframe, zoomPct) {
       word-break: break-word !important;
     }
     * { box-sizing: border-box !important; }
-    /* 用 zoom 做整体缩放：浏览器会连带重算布局，高度可准确测量 */
-    body { zoom: ${z}; }
+
+    /* 清掉邮件里的追踪像素/空段落造成的大块空白 */
+    body > p:empty,
+    body > div > p:empty,
+    p[style*="background-image"]:empty {
+      display: none !important;
+      height: 0 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
+
+    /* 可选整体字号缩放（不影响高度测量：测量时先用 100%） */
+    ${z !== 1 ? `body { font-size: ${Math.round(z * 100)}% !important; }` : ''}
   `;
 
   // 布局稳定后重新量高度；分多次，覆盖图片异步加载
@@ -2066,29 +2096,43 @@ function applyInnerLayout(iframe, zoomPct) {
   setTimeout(fix, 1500);
 }
 
-/** 把 iframe 高度设置为内容的真实高度（此时没有 transform，测量是准的） */
+/** 把 iframe 高度设置为内容的屏幕真实高度（考虑 body 上的 zoom 系数） */
 function syncFrameHeight(iframe) {
   const wrap = document.getElementById('mailHtmlWrap');
   if (!iframe || !wrap) return;
   try {
     const doc = iframe.contentWindow.document;
-    if (!doc) return;
+    if (!doc || !doc.body) return;
     const b = doc.body;
     const d = doc.documentElement;
-    const h = Math.max(
-      b ? b.scrollHeight : 0,
-      b ? b.offsetHeight : 0,
-      d ? d.scrollHeight : 0,
-      d ? d.offsetHeight : 0
+
+    // 关键：body 上应用了 zoom 后，scrollHeight/offsetHeight 返回的是
+    // 「未缩放」的 CSS 像素值，而不是屏幕上实际占用的高度。
+    // 必须读取 zoom 系数，把测量值换算成屏幕真实高度，否则会多留空白。
+    let z = 1;
+    try {
+      const cs = iframe.contentWindow.getComputedStyle(b);
+      const zf = cs.zoom || cs.getPropertyValue('zoom');
+      const parsed = parseFloat(zf);
+      if (!isNaN(parsed) && parsed > 0) z = parsed;
+    } catch (e) {}
+
+    const rawH = Math.max(
+      b.scrollHeight || 0,
+      b.offsetHeight || 0,
+      Math.ceil(b.getBoundingClientRect().height) || 0,
+      d ? (d.scrollHeight || 0) : 0
     );
-    if (h > 0) {
-      const px = Math.ceil(h) + 4;   // 留 4px 余量，避免出现内部滚动条
-      iframe.style.height = px + 'px';
-      wrap.style.height = px + 'px';
-    }
+    if (rawH <= 0) return;
+
+    // 换算成屏幕实际高度（zoom 已把视觉尺寸缩小了）
+    const screenH = Math.ceil(rawH * z) + 2;
+
+    iframe.style.height = screenH + 'px';
+    wrap.style.height = screenH + 'px';
   } catch (e) {
-    iframe.style.height = '500px';
-    wrap.style.height = 'auto';
+    iframe.style.height = '600px';
+    wrap.style.height = '600px';
   }
 }
 
@@ -2106,36 +2150,22 @@ function fitMailContent() {
     const doc = iframe.contentWindow.document;
     if (!doc || !doc.body) return;
 
-    // 先注入自适应样式（此时 zoom=100%），量出邮件「真实需要的宽度」
+    // 注入自适应样式：让邮件内容真正按容器宽度重排（不做整体缩放）
     applyInnerLayout(iframe, 100);
 
-    const containerW = wrap.clientWidth || (window.innerWidth - 64);
-    // 取所有元素中最宽的，判断邮件是否超出容器
-    let widest = doc.body.scrollWidth || 0;
-    try {
-      const all = doc.body.querySelectorAll('*');
-      for (let i = 0; i < all.length && i < 3000; i++) {
-        const w = all[i].scrollWidth || 0;
-        if (w > widest) widest = w;
-      }
-    } catch (e) {}
+    // 内容重排后直接量高度，邮件末尾紧接下方
+    const fix = () => syncFrameHeight(iframe);
+    fix();
+    setTimeout(fix, 120);
+    setTimeout(fix, 500);
+    setTimeout(fix, 1500);
 
-    if (widthMode() === 'fit' && widest > containerW && containerW > 0) {
-      // 需要整体缩放：比例如实反映，不再人为限制 40% 下限
-      let ratio = Math.floor((containerW / widest) * 100);
-      if (ratio < 25) ratio = 25;
-      if (ratio > 100) ratio = 100;
-      curMailZoom = ratio;
-    } else {
-      curMailZoom = 100;
-    }
-
-    applyMailZoom();
     const btnFit = document.getElementById('btnZoomFit');
-    if (btnFit) btnFit.classList.toggle('active', widthMode() === 'fit');
+    if (btnFit) btnFit.classList.toggle('active', true);
+    const ba = document.getElementById('btnZoomActual');
+    if (ba) ba.classList.toggle('active', false);
   } catch (e) {
-    curMailZoom = 100;
-    applyMailZoom();
+    try { syncFrameHeight(iframe); } catch (e2) {}
   }
 }
 
