@@ -679,14 +679,18 @@ body.sidebar-collapsed .account-folders-list {
 .reader-body-scroll {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 24px 32px;
+  box-sizing: border-box;
 }
 .reader-subject {
   font-size: 22px;
   font-weight: 500;
   color: var(--md-on-surface);
-  margin-bottom: 24px;
-  line-height: 1.3;
+  margin-bottom: 20px;
+  line-height: 1.35;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .reader-card {
   border: 1px solid var(--md-outline-variant);
@@ -694,12 +698,18 @@ body.sidebar-collapsed .account-folders-list {
   background: var(--md-surface);
   padding: 20px 24px;
   margin-bottom: 20px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
 }
 .reader-header {
   display: flex;
   align-items: flex-start;
-  gap: 16px;
+  gap: 14px;
   margin-bottom: 12px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 .reader-avatar {
   width: 44px;
@@ -719,6 +729,45 @@ body.sidebar-collapsed .account-folders-list {
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+.reader-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.reader-top-line {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+.reader-sender {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--md-on-surface);
+  line-height: 1.4;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  flex: 1;
+}
+.reader-date {
+  font-size: 12px;
+  color: var(--md-outline);
+  white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 1.6;
+  text-align: right;
+}
+.reader-to-line {
+  font-size: 12px;
+  color: var(--md-outline);
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
 }
 .reader-zoom-section {
   margin-bottom: 16px;
@@ -1348,7 +1397,14 @@ body.sidebar-collapsed .account-folders-list {
   }
   .sender-name { width: auto; max-width: 160px; font-size: 15px; }
   .mail-content-preview { flex-basis: 100%; margin-top: 2px; font-size: 13.5px; }
-  .reader-body-scroll { padding: 16px; }
+  .reader-body-scroll { padding: 14px 12px; }
+  .reader-card { padding: 14px 12px; }
+  .reader-subject { font-size: 18px; margin-bottom: 14px; }
+  .reader-header { gap: 10px; }
+  .reader-avatar { width: 38px; height: 38px; font-size: 14px; }
+  .reader-top-line { flex-direction: column; gap: 2px; align-items: flex-start; }
+  .reader-sender { font-size: 14px; }
+  .reader-date { font-size: 11.5px; text-align: left; }
 }
 </style>
 </head>
@@ -2259,10 +2315,12 @@ async function openMail(idx) {
         <div class="reader-header">
           <div class="reader-avatar">${getDomainAvatarHtml(full.from)}</div>
           <div class="reader-meta">
-            <div class="reader-sender">${escapeHtml(full.from)}</div>
+            <div class="reader-top-line">
+              <div class="reader-sender" title="${escapeHtml(full.from)}">${escapeHtml(full.from)}</div>
+              <div class="reader-date">${escapeHtml(full.full_date || full.date || '')}</div>
+            </div>
             <div class="reader-to-line">发送至：${escapeHtml(full.to || '我')}</div>
           </div>
-          <div class="reader-date">${full.full_date || full.date}</div>
         </div>
 
         <!-- 缩放与自适应控制栏 (可折叠在收件人下方) -->
