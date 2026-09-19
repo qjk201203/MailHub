@@ -324,8 +324,8 @@ _FOLDER_CACHE_TTL = 600
 
 _SYNC_STATUS = {'running': False, 'done': 0, 'total': 0, 'current_account': '', 'current_folder': '', 'last_error': ''}
 
-_UNREAD_CACHE = {}
-_UNREAD_UPDATED_AT = 0
+_UNREAD_CACHE = storage.load_unread_counts()
+_UNREAD_UPDATED_AT = _time.time() if _UNREAD_CACHE else 0
 _UNREAD_REFRESHING = {'active': False, 'current': ''}
 
 
@@ -346,21 +346,19 @@ def _refresh_unread_single(acc):
             try:
                 q = a._quote_folder(raw)
                 typ, data = a.conn.status(q, '(UNSEEN)')
-                n = 0
                 if typ == 'OK' and data:
                     s = data[0].decode('utf-8', 'ignore') if isinstance(data[0], bytes) else str(data[0])
                     m = re.search(r'UNSEEN\s+(\d+)', s)
-                    n = int(m.group(1)) if m else 0
+                    if m:
+                        cnt[raw] = int(m.group(1))
             except Exception:
-                n = 0
-            cnt[raw] = n
+                pass  # 单个文件夹查询失败时保留现有未读数，避免被重置为 0
         if 'INBOX' not in cnt:
             cnt['INBOX'] = 0
         return email, cnt
     except Exception:
-        if email not in _UNREAD_CACHE:
-            cnt['INBOX'] = 0
-        return email, cnt
+        # 网络异常时直接返回旧的缓存未读数，绝不重置为 0
+        return email, _UNREAD_CACHE.get(email, cnt)
     finally:
         a.logout()
 
@@ -374,11 +372,16 @@ def _refresh_unread_counts():
     for fut in as_completed(futures):
         try:
             email, cnt = fut.result()
-            _UNREAD_CACHE[email] = cnt
+            if cnt:
+                _UNREAD_CACHE[email] = cnt
         except Exception:
             pass
     _UNREAD_REFRESHING['active'] = False
     _UNREAD_UPDATED_AT = _time.time()
+    try:
+        storage.save_unread_counts(_UNREAD_CACHE)
+    except Exception:
+        pass
 
 
 def start_unread_refresher():

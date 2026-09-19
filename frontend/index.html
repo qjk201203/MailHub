@@ -1878,50 +1878,27 @@ async function loadAccounts() {
         const fdata = await fres.json();
         accountFolders[acc.email] = fdata.folders || [];
         renderAccountsTree();
+        // 渲染新子文件夹节点后，立即应用缓存的未读气泡，避免空白
+        _applyUnreadBadges();
       } catch (e) {}
     });
   } catch (e) {}
 }
 
-function renderAccountsTree() {
-  const container = document.getElementById('accountsTreeNav');
-  container.innerHTML = accounts.map(a => {
-    const flds = accountFolders[a.email] || [];
-    const isCurAccount = (curAccount === a.email);
+// 缓存最新的未读数据对象
+let _lastUnreadData = {};
 
-    return `
-      <div class="account-group" id="group-${escapeHtml(a.email)}">
-        <div class="account-group-header" onclick="toggleAccountGroup('${escapeHtml(a.email)}')">
-          <div class="av-icon">${(a.display_name || a.email)[0].toUpperCase()}</div>
-          <span class="name">${escapeHtml(a.display_name || a.email)}</span>
-          <span class="fold-arrow">▼</span>
-        </div>
-        <div class="account-folders-list">
-          <div class="folder-sub-item ${isCurAccount && curFolder === 'INBOX' ? 'active' : ''}" onclick="switchFolder('${escapeHtml(a.email)}', 'INBOX', '收件箱')">
-            <svg><use href="#i-inbox"/></svg>
-            <span class="label">收件箱</span>
-            <span class="badge" id="badge-${escapeHtml(a.email)}-INBOX"></span>
-          </div>
-          ${flds.map(f => {
-            if (f.raw === 'INBOX') return '';
-            const isAct = (isCurAccount && curFolder === f.raw);
-            return `
-              <div class="folder-sub-item ${isAct ? 'active' : ''}" onclick="switchFolder('${escapeHtml(a.email)}', '${escapeHtml(f.raw)}', '${escapeHtml(f.name)}')">
-                <svg><use href="#i-folder"/></svg>
-                <span class="label">${escapeHtml(f.name)}</span>
-                <span class="badge" id="badge-${escapeHtml(a.email)}-${escapeHtml(f.raw)}"></span>
-              </div>
-            `;
-          }).join('')}
-        </div>
-      </div>
-    `;
-  }).join('');
-}
-
-function toggleAccountGroup(email) {
-  const grp = document.getElementById(`group-${email}`);
-  if (grp) grp.classList.toggle('collapsed');
+function _applyUnreadBadges() {
+  let totalUnread = 0;
+  for (const [email, fmap] of Object.entries(_lastUnreadData)) {
+    for (const [fraw, count] of Object.entries(fmap)) {
+      if (fraw === 'INBOX') totalUnread += count;
+      const badge = document.getElementById(`badge-${email}-${fraw}`);
+      if (badge) badge.textContent = count > 0 ? count : '';
+    }
+  }
+  const allBadge = document.getElementById('badge-all-inbox');
+  if (allBadge) allBadge.textContent = totalUnread > 0 ? totalUnread : '';
 }
 
 // 加载未读计数
@@ -1929,18 +1906,8 @@ async function loadUnreadCounts() {
   try {
     const res = await fetch('/api/unread');
     const data = await res.json();
-    const unread = data.unread || {};
-    let totalUnread = 0;
-    
-    for (const [email, fmap] of Object.entries(unread)) {
-      for (const [fraw, count] of Object.entries(fmap)) {
-        if (fraw === 'INBOX') totalUnread += count;
-        const badge = document.getElementById(`badge-${email}-${fraw}`);
-        if (badge) badge.textContent = count > 0 ? count : '';
-      }
-    }
-    const allBadge = document.getElementById('badge-all-inbox');
-    if (allBadge) allBadge.textContent = totalUnread > 0 ? totalUnread : '';
+    _lastUnreadData = data.unread || {};
+    _applyUnreadBadges();
   } catch (e) {}
 }
 

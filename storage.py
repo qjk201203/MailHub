@@ -229,9 +229,22 @@ def load_body(account, folder, seq):
     return None
 
 
-# ---- 应用设置 ----
+# ---- 未读计数缓存持久化 ----
 
-def get_setting(key, default=''):
+def save_unread_counts(unread_dict):
+    """持久化未读数到数据库"""
+    import json
+    set_setting('unread_counts_cache', json.dumps(unread_dict, ensure_ascii=False))
+
+
+def load_unread_counts():
+    """从数据库读取上次保存的未读数"""
+    import json
+    raw = get_setting('unread_counts_cache', '{}')
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {}
     db = get_db()
     row = db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
     db.close()
