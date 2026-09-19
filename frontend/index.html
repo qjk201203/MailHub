@@ -2005,32 +2005,11 @@ async function openMail(idx) {
         try {
           const doc = iframe.contentWindow.document;
 
-          // 统一由 fitMailContent 注入布局/缩放样式，避免多处注入冲突
+          // 统一由 fitMailContent 完成：探测宽度 → 预留图片占位 → 渲染
           fitMailContent();
 
-          // 图片异步加载完毕版式会变，重跑一次模式渲染（会重新探测宽度并修正高度）
-          const relayout = () => { try { _renderMailWithMode(iframe); } catch (e) {} };
-          setTimeout(relayout, 300);
-          setTimeout(relayout, 1200);
-          setTimeout(relayout, 3000);
-
-          const imgs = doc.images || [];
-          for (let i = 0; i < imgs.length; i++) {
-            if (!imgs[i].complete) imgs[i].addEventListener('load', relayout);
-            imgs[i].addEventListener('error', relayout);
-          }
-          try {
-            if (window.ResizeObserver) {
-              let pending = false;
-              const ro = new ResizeObserver(() => {
-                if (pending) return;          // 防止观察自身引发的死循环
-                pending = true;
-                requestAnimationFrame(() => { pending = false; relayout(); });
-              });
-              ro.observe(doc.body);
-              setTimeout(() => ro.disconnect(), 8000);
-            }
-          } catch (e) {}
+          // 图片加载期间只同步高度（样式已注入，不再重复重排）
+          _scheduleHeightSync(iframe, _currentScale());
         } catch (e) {}
       };
     }
@@ -2169,6 +2148,11 @@ function applyInnerLayout(iframe, zoomPct, forcedLogicalW) {
       max-width: 100% !important;
       height: auto !important;
     }
+    /* 图片未加载完成前按占位高度渲染，避免边下边重排导致的长时间抖动 */
+    img[data-mh-ph] {
+      height: auto !important;
+      min-height: 1px;
+    }
     /* 已经很宽的表格容器，允许轻微收缩但保留 table-layout */
     table[width] {
       max-width: 100% !important;
@@ -2181,7 +2165,7 @@ function applyInnerLayout(iframe, zoomPct, forcedLogicalW) {
     p:empty, body > p:empty { display: none !important; height: 0 !important; margin: 0 !important; }
   `;
 
-  // 缩放比：自适应模式恒为 1（画布=容器宽），原始宽度模式按比例缩放
+  // 缩放比：适应屏幕模式恒为 1（画布=容器宽），保持原版式模式按比例缩放
   const scale = Math.max(0.25, Math.min(1.5, (zoomPct || 100) / 100));
 
   // 让 iframe 以「逻辑画布宽度」布局：内容在这个宽度下正常换行，绝不裁切
@@ -2192,13 +2176,99 @@ function applyInnerLayout(iframe, zoomPct, forcedLogicalW) {
   // transform 不改变布局占位，所以外层高度必须由 JS 手动设为「逻辑高度 × 缩放比」
   iframe.style.marginBottom = '0';
 
-  // 多次校正高度（覆盖图片异步加载）
-  const fix = () => syncFrameHeight(iframe, scale);
-  fix();
-  setTimeout(fix, 120);
-  setTimeout(fix, 500);
-  setTimeout(fix, 1500);
-  setTimeout(fix, 3000);
+  // 关键优化：给未加载的图片预留占位高度，使布局在图片下载前就基本定型，
+  // 避免「边下载边重排」造成数秒的排版抖动（营销邮件常有几十张商品图）。
+  _reserveImageSpace(doc);
+
+  // 立即量一次（此时已按占位高度布局，高度接近最终值）
+  syncFrameHeight(iframe, scale);
+
+  // 仅量固定高度，不再反复重排
+  _scheduleHeightSync(iframe, scale);
+}
+
+/**
+ * 为尚未加载完成的图片预留占位高度。
+ * 依据图片自身的 width/height 属性或已知宽高比设置 min-height，
+ * 让浏览器在图片到达前就能分配出正确的空间。
+ */
+function _reserveImageSpace(doc) {
+  let imgs;
+  try { imgs = doc.images || doc.querySelectorAll('img'); } catch (e) { return; }
+  if (!imgs || !imgs.length) return;
+
+  // 容器宽度（逻辑画布），用于换算等比高度
+  const boxW = parseFloat(doc.body && doc.body.clientWidth) || 0;
+
+  for (let i = 0; i < imgs.length; i++) {
+    const img = imgs[i];
+    if (img.complete && img.naturalHeight > 0) continue;   // 已加载，无需占位
+
+    let w = parseInt(img.getAttribute('width'), 10) || 0;
+    let h = parseInt(img.getAttribute('height'), 10) || 0;
+    if (!w) {
+      const st = img.getAttribute('style') || '';
+      const m = /width\s*:\s*(\d+)px/.exec(st);
+      if (m) w = parseInt(m[1], 10);
+    }
+    if (!h) {
+      const st = img.getAttribute('style') || '';
+      const m = /height\s*:\s*(\d+)px/.exec(st);
+      if (m) h = parseInt(m[1], 10);
+    }
+
+    let ph = 0;
+    if (w && h && w > 0) {
+      // 有宽高比：按显示宽度等比换算高度
+      const dispW = (boxW && w > boxW) ? boxW : w;
+      ph = Math.round(h * dispW / w);
+    } else if (w && w > 0) {
+      ph = Math.round(w * 0.6);          // 常见商品图近似比例
+    } else {
+      ph = 180;                          // 完全未知时给个保守占位
+    }
+
+    if (ph > 4000) ph = 4000;            // 防止异常值撑爆布局
+    if (ph > 0) {
+      img.setAttribute('data-mh-ph', '1');
+      img.style.minHeight = ph + 'px';
+    }
+  }
+}
+
+/** 图片陆续加载时同步高度：只量高度，不重新注入样式、不重排 */
+function _scheduleHeightSync(iframe, scale) {
+  if (!iframe) return;
+  let doc;
+  try { doc = iframe.contentWindow.document; } catch (e) { return; }
+  if (!doc || !doc.body) return;
+
+  const sync = () => { try { syncFrameHeight(iframe, scale); } catch (e) {} };
+
+  // 用 requestAnimationFrame 合并高频触发的重算
+  let pending = false;
+  const syncThrottled = () => {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => { pending = false; sync(); });
+  };
+
+  // 图片逐个到达时刷新高度（占位已保证幅度很小）
+  try {
+    const imgs = doc.images || [];
+    for (let i = 0; i < imgs.length; i++) {
+      const img = imgs[i];
+      if (!img.complete) {
+        img.addEventListener('load', syncThrottled, { once: true });
+        img.addEventListener('error', syncThrottled, { once: true });
+      }
+    }
+  } catch (e) {}
+
+  // 少量兜底时机，覆盖字体/表格重排等
+  setTimeout(sync, 150);
+  setTimeout(sync, 600);
+  setTimeout(sync, 1500);
 }
 
 
