@@ -1885,6 +1885,48 @@ async function loadAccounts() {
   } catch (e) {}
 }
 
+function renderAccountsTree() {
+  const container = document.getElementById('accountsTreeNav');
+  if (!container) return;
+  container.innerHTML = accounts.map(a => {
+    const flds = accountFolders[a.email] || [];
+    const isCurAccount = (curAccount === a.email);
+
+    return `
+      <div class="account-group" id="group-${escapeHtml(a.email)}">
+        <div class="account-group-header" onclick="toggleAccountGroup('${escapeHtml(a.email)}')">
+          <div class="av-icon">${(a.display_name || a.email)[0].toUpperCase()}</div>
+          <span class="name">${escapeHtml(a.display_name || a.email)}</span>
+          <span class="fold-arrow">▼</span>
+        </div>
+        <div class="account-folders-list">
+          <div class="folder-sub-item ${isCurAccount && curFolder === 'INBOX' ? 'active' : ''}" onclick="switchFolder('${escapeHtml(a.email)}', 'INBOX', '收件箱')">
+            <svg><use href="#i-inbox"/></svg>
+            <span class="label">收件箱</span>
+            <span class="badge" id="badge-${escapeHtml(a.email)}-INBOX"></span>
+          </div>
+          ${flds.map(f => {
+            if (f.raw === 'INBOX') return '';
+            const isAct = (isCurAccount && curFolder === f.raw);
+            return `
+              <div class="folder-sub-item ${isAct ? 'active' : ''}" onclick="switchFolder('${escapeHtml(a.email)}', '${escapeHtml(f.raw)}', '${escapeHtml(f.name)}')">
+                <svg><use href="#i-folder"/></svg>
+                <span class="label">${escapeHtml(f.name)}</span>
+                <span class="badge" id="badge-${escapeHtml(a.email)}-${escapeHtml(f.raw)}"></span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function toggleAccountGroup(email) {
+  const grp = document.getElementById(`group-${email}`);
+  if (grp) grp.classList.toggle('collapsed');
+}
+
 // 缓存最新的未读数据对象
 let _lastUnreadData = {};
 
