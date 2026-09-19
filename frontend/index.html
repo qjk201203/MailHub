@@ -2744,11 +2744,37 @@ async function previewAttachment(attIdx) {
   const ctype = (att.content_type || '').toLowerCase();
 
   try {
-    // 1. PDF 格式：浏览器原生 iframe 渲染
+    // 1. PDF 格式：使用 PDF.js 纯前端 Canvas 渲染（解决手机/Edge 禁用内置 PDF 导致的拦截问题）
     if (ext === 'pdf' || ctype.includes('pdf')) {
-      const blob = new Blob([_base64ToArrayBuffer(att.data)], { type: 'application/pdf' });
-      const blobUrl = URL.createObjectURL(blob);
-      body.innerHTML = `<iframe src="${blobUrl}" title="${escapeHtml(att.filename)}"></iframe>`;
+      await _loadScript('/vendor/pdf.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
+      if (typeof pdfjsLib === 'undefined') {
+        throw new Error('无法加载 PDF 解析引擎');
+      }
+
+      pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdf.worker.min.js';
+
+      const ab = _base64ToArrayBuffer(att.data);
+      const loadingTask = pdfjsLib.getDocument({ data: ab });
+      const pdf = await loadingTask.promise;
+      const totalPages = pdf.numPages;
+
+      body.innerHTML = `
+        <div style="display:flex; flex-direction:column; height:100%; width:100%">
+          <div style="padding:8px 16px; background:var(--md-surface-1); border-bottom:1px solid var(--md-outline-variant); display:flex; align-items:center; justify-content:space-between; font-size:13px">
+            <span style="color:var(--md-outline)">共 ${totalPages} 页</span>
+            <div style="display:flex; gap:8px; align-items:center">
+              <button class="preview-btn" onclick="_adjustPdfZoom(-0.2)" style="padding:2px 8px; font-size:12px">－ 缩小</button>
+              <span id="pdfZoomLabel" style="font-weight:600; min-width:48px; text-align:center">100%</span>
+              <button class="preview-btn" onclick="_adjustPdfZoom(0.2)" style="padding:2px 8px; font-size:12px">＋ 放大</button>
+            </div>
+          </div>
+          <div id="pdfPagesContainer" style="flex:1; overflow:auto; padding:16px; display:flex; flex-direction:column; align-items:center; gap:16px; background:#525659"></div>
+        </div>
+      `;
+
+      window._currentPdfDoc = pdf;
+      window._currentPdfScale = 1.2;
+      await _renderPdfPages(pdf, 1.2);
       return;
     }
 
@@ -2920,6 +2946,49 @@ function _switchPreviewSheet(idx) {
   containers.forEach((ct, i) => {
     ct.style.display = (i === idx) ? 'block' : 'none';
   });
+}
+
+/** 渲染 PDF 页面到 Canvas */
+async function _renderPdfPages(pdf, scale) {
+  const container = document.getElementById('pdfPagesContainer');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const label = document.getElementById('pdfZoomLabel');
+  if (label) label.textContent = Math.round(scale * 100 / 1.2) + '%';
+
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const viewport = page.getViewport({ scale: scale });
+
+    const canvas = document.createElement('canvas');
+    canvas.style.maxWidth = '100%';
+    canvas.style.height = 'auto';
+    canvas.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
+    canvas.style.borderRadius = '4px';
+    canvas.style.background = '#fff';
+
+    const context = canvas.getContext('2d');
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+
+    container.appendChild(canvas);
+
+    await page.render({
+      canvasContext: context,
+      viewport: viewport
+    }).promise;
+  }
+}
+
+/** 调节 PDF 缩放比例 */
+async function _adjustPdfZoom(delta) {
+  if (!window._currentPdfDoc) return;
+  let newScale = (window._currentPdfScale || 1.2) + delta;
+  if (newScale < 0.5) newScale = 0.5;
+  if (newScale > 3.0) newScale = 3.0;
+  window._currentPdfScale = newScale;
+  await _renderPdfPages(window._currentPdfDoc, newScale);
 }
 
 // 写信浮窗
