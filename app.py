@@ -834,6 +834,21 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == '/':
             self._serve_index()
+        elif path.startswith('/vendor/'):
+            filename = os.path.basename(path)
+            vendor_dir = os.path.join(os.path.dirname(__file__), 'frontend', 'vendor')
+            file_path = os.path.join(vendor_dir, filename)
+            if os.path.isfile(file_path):
+                with open(file_path, 'rb') as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/javascript; charset=utf-8')
+                self.send_header('Content-Length', str(len(data)))
+                self.send_header('Cache-Control', 'public, max-age=604800')
+                self.end_headers()
+                self.wfile.write(data)
+            else:
+                self._send(404, {'error': 'vendor file not found'})
         elif path == '/api/inbox':
             account = qs.get('account', [''])[0] or None
             folder = qs.get('folder', ['INBOX'])[0] or 'INBOX'
