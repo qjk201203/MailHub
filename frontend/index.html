@@ -1469,6 +1469,28 @@ let searchTerm = '';
 let selectedMails = new Set();
 let curMailIndex = -1;
 const _bodyMemoryCache = new Map(); // 内存高速正文缓存，瞬时点开
+
+// 本地已读记录：{ "account|folder|uid": true }
+// 用于抵抗「服务器还没同步完就返回旧状态」导致的已读回退
+let _localRead = new Set();
+
+function _mailKey(m) {
+  return `${m.account}|${m.folder || curFolder}|${m.uid}`;
+}
+
+/**
+ * 合并服务器返回的列表与本地已读记录。
+ * 只要本地记过「已读」，就不再被服务器的旧状态刷回未读。
+ */
+function mergeReadState(list) {
+  if (!Array.isArray(list)) return list || [];
+  return list.map(m => {
+    if (_localRead.has(_mailKey(m))) {
+      return Object.assign({}, m, { is_read: true });
+    }
+    return m;
+  });
+}
 let composerAttachments = [];
 let curPage = 1;
 let pageSize = 50;
@@ -1666,7 +1688,7 @@ async function loadInbox(force = false) {
     const res = await fetch(url, { signal: ctrl.signal });
     clearTimeout(timer);
     const data = await res.json();
-    mails = data.all_mails || [];
+    mails = mergeReadState(data.all_mails || []);
     totalMailCount = data.total || mails.length;
     updatePagingControls();
     renderMailList();
@@ -1678,7 +1700,7 @@ async function loadInbox(force = false) {
           const r2 = await fetch(`/api/inbox?folder=${encodeURIComponent(curFolder)}&limit=${pageSize}&offset=${offset}` + (curAccount !== 'all' ? `&account=${encodeURIComponent(curAccount)}` : ''));
           const d2 = await r2.json();
           if (d2.all_mails && d2.all_mails.length) {
-            mails = d2.all_mails;
+            mails = mergeReadState(d2.all_mails);
             totalMailCount = d2.total || mails.length;
             updatePagingControls();
             renderMailList();
@@ -1831,13 +1853,16 @@ async function openMail(idx) {
   }
 
   if (!m.is_read) {
+    // 立即更新界面，并记入本地已读表（防止服务器延迟导致回退）
     m.is_read = true;
+    _localRead.add(_mailKey(m));
     renderMailList();
+    // 通知服务器（失败也不回滚本地状态）
     fetch('/api/mark_read', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({account: m.account, folder: m.folder || curFolder, seq: m.uid})
-    });
+    }).catch(() => {});
   }
 
   try {
@@ -2452,13 +2477,17 @@ function toggleStar(idx) {
 
 function toggleReadItem(idx) {
   const m = mails[idx];
+  if (!m) return;
   m.is_read = !m.is_read;
+  // 手动切换时更新本地已读表：真正标记为未读时应移除记录
+  if (m.is_read) _localRead.add(_mailKey(m));
+  else _localRead.delete(_mailKey(m));
   renderMailList();
   fetch(m.is_read ? '/api/mark_read' : '/api/mark_unread', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({account: m.account, folder: m.folder || curFolder, seq: m.uid})
-  });
+  }).catch(() => {});
 }
 
 function deleteMailItem(idx) {
