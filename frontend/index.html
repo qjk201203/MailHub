@@ -1968,8 +1968,8 @@ async function openMail(idx) {
               <button class="zoom-btn" onclick="adjustMailZoom(-10)">－</button>
               <input type="range" class="zoom-slider" id="zoomSlider" min="30" max="150" value="100" step="5" oninput="setMailZoom(this.value)">
               <button class="zoom-btn" onclick="adjustMailZoom(10)">＋</button>
-              <button class="zoom-btn active" id="btnZoomFit" onclick="setWidthMode('fit')">自适应屏幕</button>
-              <button class="zoom-btn" id="btnZoomActual" onclick="setWidthMode('actual')">原始宽度</button>
+              <button class="zoom-btn" id="btnZoomFit" onclick="setWidthMode('fit')" title="把邮件压到屏幕宽度重新排版（少数简单邮件适用）">适应屏幕宽度</button>
+              <button class="zoom-btn active" id="btnZoomActual" onclick="setWidthMode('actual')" title="保持邮件原始排版，整体缩放到屏幕（推荐）">保持原版式</button>
               <button class="zoom-btn" onclick="setMailZoom(100)">100%</button>
             </div>
           </div>
@@ -2005,11 +2005,11 @@ async function openMail(idx) {
         try {
           const doc = iframe.contentWindow.document;
 
-          // 统一由 applyInnerLayout 注入布局/缩放样式，避免多处注入冲突
+          // 统一由 fitMailContent 注入布局/缩放样式，避免多处注入冲突
           fitMailContent();
 
-          // 图片异步加载完毕高度会变，多次校正
-          const relayout = () => { try { applyMailZoom(); } catch (e) {} };
+          // 图片异步加载完毕版式会变，重跑一次模式渲染（会重新探测宽度并修正高度）
+          const relayout = () => { try { _renderMailWithMode(iframe); } catch (e) {} };
           setTimeout(relayout, 300);
           setTimeout(relayout, 1200);
           setTimeout(relayout, 3000);
@@ -2041,40 +2041,39 @@ async function openMail(idx) {
 
 let curMailZoom = 100;
 
-// 显示模式：'fit' 自适应屏幕宽度 / 'actual' 原始 100% 宽度
-let _widthMode = 'fit';
+// 显示模式：'actual' 保持邮件原始排版宽度并整体缩放（默认，推荐）
+//           'fit'    强行按屏幕宽度重排（少数简单邮件适用）
+let _widthMode = 'actual';
 function widthMode() { return _widthMode; }
 
+/** 切换显示模式 */
 function setWidthMode(mode) {
-  _widthMode = (mode === 'actual') ? 'actual' : 'fit';
-  const bf = document.getElementById('btnZoomFit');
-  const ba = document.getElementById('btnZoomActual');
-  if (bf) bf.classList.toggle('active', _widthMode === 'fit');
-  if (ba) ba.classList.toggle('active', _widthMode === 'actual');
-
+  _widthMode = (mode === 'fit') ? 'fit' : 'actual';
   const iframe = document.getElementById('mailFrame');
+  if (!iframe) return;
+  _renderMailWithMode(iframe);
+}
+
+/** 按当前模式渲染邮件 */
+function _renderMailWithMode(iframe) {
   const wrap = document.getElementById('mailHtmlWrap');
   if (!iframe || !wrap) return;
+  const containerW = Math.max(240, wrap.clientWidth || (window.innerWidth - 64));
 
-  if (_widthMode === 'actual') {
-    // 原始宽度：逻辑画布 = 邮件声明宽度（如 660），再缩放到容器 → 保持原排版
-    const containerW = wrap.clientWidth || (window.innerWidth - 64);
-    let mailW = 660;
-    try {
-      const doc = iframe.contentWindow.document;
-      const tbl = doc.querySelector('table[width]');
-      if (tbl) {
-        const w = parseInt(tbl.getAttribute('width'), 10);
-        if (w >= 320 && w <= 2000) mailW = w;
-      }
-    } catch (e) {}
-    const scale = Math.max(0.25, Math.min(1, containerW / mailW));
-    curMailZoom = Math.round(scale * 100);
-    applyInnerLayout(iframe, curMailZoom, mailW);
-  } else {
+  if (_widthMode === 'fit') {
+    // 按屏幕宽度重排：逻辑宽度 = 容器宽，缩放 100%
     curMailZoom = 100;
     applyInnerLayout(iframe, 100);
+  } else {
+    // 保持原始排版宽度，等比缩放到屏幕
+    const mailW = _detectMailWidth(iframe);
+    let scale = containerW / mailW;
+    if (scale > 1) scale = 1;              // 屏幕比邮件宽时不放大，保持原样
+    if (scale < 0.25) scale = 0.25;        // 过窄时给个下限，避免小到不可读
+    curMailZoom = Math.round(scale * 100);
+    applyInnerLayout(iframe, curMailZoom, mailW);
   }
+  _refreshWidthModeButtons();
 }
 
 function toggleZoomBar() {
@@ -2259,6 +2258,14 @@ function _currentScale() {
   return Math.max(0.3, Math.min(1.5, (curMailZoom || 100) / 100));
 }
 
+/**
+ * 打开邮件时的默认渲染：保持邮件原始排版宽度，整体缩放到屏幕。
+ *
+ * 为什么默认这样做：绝大多数 HTML 邮件（尤其营销/通知类）都采用
+ * 固定宽度的 <table> 布局（常见 600/660px）。若强行压到手机宽度，
+ * 表格会被挤变形、文字频繁折行，排版严重错乱。
+ * 保持原宽度再等比缩放，才能保留作者设计的版式（Gmail 也是此策略）。
+ */
 function fitMailContent() {
   const iframe = document.getElementById('mailFrame');
   const wrap = document.getElementById('mailHtmlWrap');
@@ -2268,24 +2275,49 @@ function fitMailContent() {
     const doc = iframe.contentWindow.document;
     if (!doc || !doc.body) return;
 
-    // 自适应 = 逻辑画布宽度等于容器宽度，缩放 100%
-    // 这样邮件内容按屏幕宽度正常换行，一行都不会被裁掉
-    applyInnerLayout(iframe, 100);
-
-    const s = _currentScale();
-    const fix = () => syncFrameHeight(iframe, s);
-    fix();
-    setTimeout(fix, 150);
-    setTimeout(fix, 600);
-    setTimeout(fix, 1500);
-
-    const btnFit = document.getElementById('btnZoomFit');
-    if (btnFit) btnFit.classList.add('active');
-    const ba = document.getElementById('btnZoomActual');
-    if (ba) ba.classList.remove('active');
+    applyInnerLayout(iframe, 100, _detectMailWidth(iframe));
+    _refreshWidthModeButtons();
   } catch (e) {
     try { syncFrameHeight(iframe, 1); } catch (e2) {}
   }
+}
+
+/** 探测邮件的原始排版宽度（取其最外层定宽容器），默认 660 */
+function _detectMailWidth(iframe) {
+  try {
+    const doc = iframe.contentWindow.document;
+    if (!doc || !doc.body) return 660;
+
+    // 1) 优先看 body 首层容器的声明宽度
+    let best = 0;
+    const cands = doc.querySelectorAll('table[width], div[width], table[style*="width"], div[style*="width"]');
+    for (let i = 0; i < cands.length && i < 40; i++) {
+      const el = cands[i];
+      let w = parseInt(el.getAttribute('width'), 10);
+      if (!w) {
+        const m = /width\s*:\s*(\d+)px/.exec(el.getAttribute('style') || '');
+        if (m) w = parseInt(m[1], 10);
+      }
+      // 忽略 100% 之类的小值（width="100" 多为百分比写法）
+      if (w && w >= 320 && w <= 2000 && w > best) best = w;
+    }
+    if (best) return best;
+
+    // 2) 退路：量内容实际需要的宽度
+    const sw = doc.body.scrollWidth || 0;
+    if (sw >= 320 && sw <= 2000) return sw;
+    return 660;
+  } catch (e) {
+    return 660;
+  }
+}
+
+/** 根据当前模式刷新两个按钮的选中态 */
+function _refreshWidthModeButtons() {
+  const bf = document.getElementById('btnZoomFit');
+  const ba = document.getElementById('btnZoomActual');
+  if (bf) bf.classList.toggle('active', _widthMode === 'fit');
+  if (ba) ba.classList.toggle('active', _widthMode === 'actual');
 }
 
 function closeReader() {
