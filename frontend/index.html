@@ -23,8 +23,13 @@
   --md-outline-variant: #e0e2e0;
   --md-hover: rgba(68, 71, 70, 0.08);
   --md-active: #c2e7ff;
-  --md-unread-bg: #ffffff;
-  --md-read-bg: #f2f6fc;
+  /* —— 邮件状态配色（高对比，一眼可辨）—— */
+  --md-unread-bg: #e8f0fe;      /* 未读：淡蓝底 */
+  --md-unread-bar: #1a73e8;     /* 未读：左侧蓝条 */
+  --md-read-bg: #ffffff;        /* 已读：白底 */
+  --md-read-text: #5f6368;      /* 已读：灰字 */
+  --md-selected-bg: #ffe8a3;    /* 选中：醒目黄底 */
+  --md-selected-bar: #f9ab00;   /* 选中：左侧橙条 */
   --md-star-color: #f29900;
   --md-danger: #ba1a1a;
   --md-radius-sm: 8px;
@@ -74,8 +79,13 @@ body[data-theme="dark"] {
   --md-outline-variant: #444746;
   --md-hover: rgba(255, 255, 255, 0.08);
   --md-active: #004a77;
-  --md-unread-bg: #28292a;
-  --md-read-bg: #1e1f20;
+  /* —— 邮件状态配色（暗色高对比）—— */
+  --md-unread-bg: #1a2b3c;      /* 未读：深蓝底 */
+  --md-unread-bar: #6b9fff;     /* 未读：亮蓝条 */
+  --md-read-bg: #1e1f20;        /* 已读：普通底 */
+  --md-read-text: #9aa0a6;      /* 已读：暗灰字 */
+  --md-selected-bg: #4a3a10;    /* 选中：深琥珀底 */
+  --md-selected-bar: #fdd663;   /* 选中：亮橙条 */
   --md-star-color: #fdd663;
   --md-danger: #ffb4ab;
   --shadow-1: 0 1px 3px rgba(0,0,0,0.4);
@@ -482,18 +492,75 @@ body.sidebar-collapsed .account-folders-list {
 .mail-row:hover {
   box-shadow: inset 1px 0 0 #dadce0, inset -1px 0 0 #dadce0, 0 1px 2px 0 rgba(60,64,67,.3);
   z-index: 2;
-  background: var(--md-surface) !important;
+  filter: brightness(0.97);
 }
+
+/* ===== 状态圆点：未读实心蓝点 / 已读空心灰点 ===== */
+.mail-dot {
+  width: 10px;
+  height: 10px;
+  min-width: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.mail-row.unread .mail-dot {
+  background: var(--md-unread-bar);
+  box-shadow: 0 0 0 3px rgba(26,115,232,.18);
+}
+.mail-row:not(.unread) .mail-dot {
+  background: transparent;
+  border: 1.5px solid var(--md-outline-variant);
+}
+.mail-row.selected .mail-dot {
+  background: var(--md-selected-bar);
+  border: none;
+  box-shadow: 0 0 0 3px rgba(249,171,0,.25);
+}
+
+/* ===== 未读：淡蓝底 + 左侧蓝条 + 加粗 ===== */
 .mail-row.unread {
   background: var(--md-unread-bg);
   font-weight: 700;
+  box-shadow: inset 4px 0 0 var(--md-unread-bar);
 }
 .mail-row.unread .sender-name,
 .mail-row.unread .mail-subject {
   color: var(--md-on-surface);
   font-weight: 700;
 }
-.mail-row.selected { background: var(--md-active) !important; }
+.mail-row.unread .mail-snippet {
+  color: var(--md-on-surface-variant);
+  font-weight: 400;
+}
+
+/* ===== 已读：白底 + 灰字（明显更淡）===== */
+.mail-row:not(.unread) {
+  background: var(--md-read-bg);
+}
+.mail-row:not(.unread) .sender-name,
+.mail-row:not(.unread) .mail-subject {
+  color: var(--md-read-text);
+  font-weight: 400;
+}
+.mail-row:not(.unread) .mail-snippet {
+  color: var(--md-outline);
+}
+.mail-row:not(.unread) .mail-avatar-icon {
+  opacity: .75;
+}
+
+/* ===== 选中：醒目黄底 + 左侧橙条（优先级最高）===== */
+.mail-row.selected {
+  background: var(--md-selected-bg) !important;
+  box-shadow: inset 4px 0 0 var(--md-selected-bar);
+}
+.mail-row.selected .sender-name,
+.mail-row.selected .mail-subject,
+.mail-row.selected .mail-snippet {
+  color: var(--md-on-surface) !important;
+}
+.mail-row.selected .mail-subject { font-weight: 700; }
 
 .mail-star {
   background: none;
@@ -1816,6 +1883,7 @@ function renderMailList() {
         <div class="mail-avatar-icon" onclick="event.stopPropagation()">
           ${getDomainAvatarHtml(m.from)}
         </div>
+        <span class="mail-dot" title="${isUnread ? '未读' : '已读'}"></span>
         <span class="sender-name">${escapeHtml(sender)}</span>
         ${curAccount === 'all' ? `<span class="account-tag">${escapeHtml(m.account)}</span>` : ''}
         ${m.has_attachment ? `<span style="font-size:12px">📎</span>` : ''}
