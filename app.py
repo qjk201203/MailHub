@@ -238,24 +238,40 @@ def aggregate_all(account=None, folder='INBOX', limit=50, force=False, offset=0)
 
     # 全局按邮件日期严格倒序排列（用时间戳排序，兼容旧缓存的原始 Date 字符串）
     from imap_client import _parse_date as _pd
-    def _ts(m):
-        d = m.get('date', '')
-        # 如果 already 格式化了 (YYYY-MM-DD HH:MM:SS)
-        if len(d) == 19 and d[4]=='-':
-             try:
-                return datetime.datetime.strptime(d, '%Y-%m-%d %H:%M:%S').timestamp()
-             except:
-                pass
-        # 尝试原始字符串
-        pd_res = _pd(d)
-        if len(pd_res) == 19 and pd_res[4]=='-':
-             try:
-                return datetime.datetime.strptime(pd_res, '%Y-%m-%d %H:%M:%S').timestamp()
-             except:
-                pass
-        return 0
 
-    flat.sort(key=_ts, reverse=True)
+    _FMT_LIST = ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y-%m-%d')
+
+    def _to_ts(d):
+        """把各种历史格式统一解析为时间戳（秒可能缺失）；失败返回 None"""
+        if not d:
+            return None
+        d = str(d).strip()
+        # 1) 已是标准格式（"2026-05-12 12:33" 这种缺秒的也要认）
+        for f in _FMT_LIST:
+            try:
+                return datetime.datetime.strptime(d, f).timestamp()
+            except Exception:
+                continue
+        # 2) 旧缓存里的原始 RFC822 Date 字符串
+        p = _pd(d)
+        if p and p != d:
+            for f in _FMT_LIST:
+                try:
+                    return datetime.datetime.strptime(p, f).timestamp()
+                except Exception:
+                    continue
+        return None
+
+    _ts_cache = {}
+
+    def _ts(m):
+        key = m.get('date', '')
+        if key not in _ts_cache:
+            _ts_cache[key] = _to_ts(key)
+        return _ts_cache[key]
+
+    # 解析失败的排到最后（而不是用 0 混进正常序列里）
+    flat.sort(key=lambda m: (_ts(m) is not None, _ts(m) or 0), reverse=True)
     total_count = len(flat)
     paged = flat[offset:offset + limit]
     result = {'all_mails': paged, 'total': total_count}
