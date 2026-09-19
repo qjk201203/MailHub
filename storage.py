@@ -36,9 +36,9 @@ def init_db():
         )
     ''')
     # 兼容旧库：补新列
-    for col, default in (('imap_ssl', '1'), ('smtp_ssl', '1')):
+    for col, default in (('imap_ssl', '1'), ('smtp_ssl', '1'), ('auth_type', "'password'"), ('oauth_token', "''")):
         try:
-            db.execute('ALTER TABLE accounts ADD COLUMN %s INTEGER DEFAULT %s' % (col, default))
+            db.execute('ALTER TABLE accounts ADD COLUMN %s TEXT DEFAULT %s' % (col, default))
         except Exception:
             pass
     # 邮件列表缓存表：{account, folder} 的邮件头，用于增量拉取
@@ -74,16 +74,23 @@ def init_db():
     db.close()
 
 
-def add_account(email, password, imap_host, imap_port, imap_ssl, smtp_host, smtp_port, smtp_ssl, display_name=''):
+def add_account(email, password, imap_host, imap_port, imap_ssl, smtp_host, smtp_port, smtp_ssl, display_name='', auth_type='password', oauth_token=''):
     db = get_db()
     cur = db.execute('''
         INSERT OR REPLACE INTO accounts
-        (email, password, imap_host, imap_port, imap_ssl, smtp_host, smtp_port, smtp_ssl, display_name)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (email, password, imap_host, imap_port, imap_ssl, smtp_host, smtp_port, smtp_ssl, display_name))
+        (email, password, imap_host, imap_port, imap_ssl, smtp_host, smtp_port, smtp_ssl, display_name, auth_type, oauth_token)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (email, password, imap_host, imap_port, imap_ssl, smtp_host, smtp_port, smtp_ssl, display_name, auth_type, oauth_token))
     db.commit()
     db.close()
     return cur.lastrowid
+
+
+def update_account_oauth_token(email, oauth_token):
+    db = get_db()
+    db.execute('UPDATE accounts SET oauth_token=? WHERE email=?', (oauth_token, email))
+    db.commit()
+    db.close()
 
 
 def list_accounts():

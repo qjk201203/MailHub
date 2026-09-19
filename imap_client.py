@@ -135,13 +135,20 @@ class _ProxyIMAP4_SSL(imaplib.IMAP4_SSL):
         ctx = ssl.create_default_context()
         return ctx.wrap_socket(sock, server_hostname=self.host)
 
+def _build_xoauth2_string(user, access_token):
+    """构建 XOAUTH2 认证字符串 (RFC 7628)"""
+    return f"user={user}\x01auth=Bearer {access_token}\x01\x01"
+
+
 class MailAccount:
-    def __init__(self, email_addr, password, imap_host, imap_port=993, imap_ssl=1):
+    def __init__(self, email_addr, password, imap_host, imap_port=993, imap_ssl=1, auth_type='password', oauth_token=''):
         self.email_addr = email_addr
         self.password = password
         self.imap_host = imap_host
         self.imap_port = imap_port
         self.imap_ssl = imap_ssl
+        self.auth_type = auth_type
+        self.oauth_token = oauth_token
         self.conn = None
 
     def _send_id_command(self):
@@ -193,9 +200,27 @@ class MailAccount:
             except Exception:
                 pass
 
-        typ, dat = self.conn.login(self.email_addr, self.password)
-        if typ != 'OK':
-            raise Exception('IMAP 登录失败: %s' % dat)
+        if self.auth_type == 'oauth2':
+            # 动态刷新/获取 Access Token
+            from . import config
+            access_token = self.password
+            if not access_token:
+                try:
+                    import json
+                    from . import app
+                    # 若存储的是 JSON 格式的 Token 结构，解析并尝试刷新
+                    tok = json.loads(self.oauth_token) if self.oauth_token else {}
+                    access_token = tok.get('access_token', '')
+                except Exception:
+                    pass
+            auth_str = _build_xoauth2_string(self.email_addr, access_token)
+            typ, dat = self.conn.authenticate('XOAUTH2', lambda x: auth_str.encode('utf-8'))
+            if typ != 'OK':
+                raise Exception('IMAP OAuth2 登录失败: %s' % dat)
+        else:
+            typ, dat = self.conn.login(self.email_addr, self.password)
+            if typ != 'OK':
+                raise Exception('IMAP 登录失败: %s' % dat)
         self._send_id_command()
         return True
 

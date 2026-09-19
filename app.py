@@ -35,6 +35,70 @@ except ImportError:
     import storage
     from imap_client import MailAccount
 
+# 微软公共 Client ID (Thunderbird / MailHub 公共客户端 ID)
+# 允许个人 Microsoft/Outlook/Hotmail 账号一键 OAuth2 登录
+MS_CLIENT_ID = os.environ.get('MAILHUB_MS_CLIENT_ID', '08162f7c-0fd2-4200-a51e-4f6677cf1d4e')
+MS_AUTH_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize'
+MS_TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
+MS_SCOPES = 'openid profile offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send'
+
+
+def _get_valid_oauth_token(acc):
+    """获取或刷新 OAuth2 Access Token"""
+    if not acc.get('oauth_token'):
+        return None
+    try:
+        tok = json.loads(acc['oauth_token'])
+    except Exception:
+        return None
+
+    # 如果有 access_token 且尚未过期，直接返回
+    expires_at = tok.get('expires_at', 0)
+    if tok.get('access_token') and expires_at > _time.time() + 60:
+        return tok
+
+    # 尝试通过 refresh_token 刷新
+    refresh_token = tok.get('refresh_token')
+    if not refresh_token:
+        return tok
+
+    proxy = storage.get_setting('proxy_url', os.environ.get('MAILHUB_PROXY', '')).strip()
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    https_handler = urllib.request.HTTPSHandler(context=ctx)
+    if proxy:
+        proxy_handler = urllib.request.ProxyHandler({'http': proxy, 'https': proxy})
+        opener = urllib.request.build_opener(proxy_handler, https_handler)
+    else:
+        opener = urllib.request.build_opener(https_handler)
+
+    params = {
+        'client_id': MS_CLIENT_ID,
+        'grant_type': 'refresh_token',
+        'refresh_token': refresh_token,
+        'scope': MS_SCOPES
+    }
+    data_bytes = urllib.parse.urlencode(params).encode('utf-8')
+    req = urllib.request.Request(MS_TOKEN_URL, data=data_bytes, headers={
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'MailHub/1.0'
+    })
+
+    try:
+        with opener.open(req, timeout=10) as resp:
+            res_data = json.loads(resp.read().decode('utf-8'))
+            if 'access_token' in res_data:
+                tok['access_token'] = res_data['access_token']
+                tok['expires_at'] = _time.time() + int(res_data.get('expires_in', 3600))
+                if 'refresh_token' in res_data:
+                    tok['refresh_token'] = res_data['refresh_token']
+                storage.update_account_oauth_token(acc['email'], json.dumps(tok))
+                return tok
+    except Exception:
+        pass
+    return tok
+
 PORT = 20111
 
 # 自动增量同步间隔（秒）：定期拉最新邮件到本地缓存
@@ -146,6 +210,29 @@ def fetch_favicon(domain):
     return None
 
 
+def _create_mail_account(acc):
+    """根据账号字典统一构建 MailAccount 实例，自动处理 OAuth2 Token 刷新"""
+    password = acc['password']
+    auth_type = acc.get('auth_type', 'password')
+    oauth_token = acc.get('oauth_token', '')
+
+    if auth_type == 'oauth2':
+        # 尝试刷新 Microsoft OAuth2 token
+        token_data = _get_valid_oauth_token(acc)
+        if token_data and token_data.get('access_token'):
+            password = token_data['access_token']
+
+    return MailAccount(
+        acc['email'],
+        password,
+        acc['imap_host'],
+        acc.get('imap_port', 993),
+        acc.get('imap_ssl', 1),
+        auth_type=auth_type,
+        oauth_token=oauth_token
+    )
+
+
 def strip_html(s):
     """剥离 HTML 标签得到预览文本"""
     if not s:
@@ -163,8 +250,7 @@ def _refresh_latest_async(account_email, folder='INBOX', n=50):
     acc = storage.get_account(account_email)
     if not acc:
         return
-    a = MailAccount(acc['email'], acc['password'],
-                    acc['imap_host'], acc['imap_port'], acc.get('imap_ssl', 1))
+    a = _create_mail_account(acc)
     try:
         a.connect()
         mails = a.fetch_recent(folder, n, light=True)
@@ -182,8 +268,7 @@ def _refresh_latest_async(account_email, folder='INBOX', n=50):
 
 def _fetch_account_mails(acc, folder='INBOX', limit=50):
     """单账号拉取邮件列表"""
-    a = MailAccount(acc['email'], acc['password'],
-                    acc['imap_host'], acc['imap_port'], acc.get('imap_ssl', 1))
+    a = _create_mail_account(acc)
     a.connect()
     mails = a.fetch_recent(folder, limit, light=True)
     for m in mails:
@@ -206,7 +291,7 @@ def _prefetch_bodies(account_email, folder, mids):
                 if m.get('uid', '') and not storage.load_body(account_email, folder, m.get('uid', ''))]
     if not to_fetch:
         return
-    a = MailAccount(acc['email'], acc['password'], acc['imap_host'], acc['imap_port'], acc.get('imap_ssl', 1))
+    a = _create_mail_account(acc)
     try:
         a.connect()
         for i in range(0, len(to_fetch), 20):
@@ -332,8 +417,7 @@ _UNREAD_REFRESHING = {'active': False, 'current': ''}
 def _refresh_unread_single(acc):
     """单个账号统计未读"""
     email = acc['email']
-    a = MailAccount(email, acc['password'], acc['imap_host'],
-                    acc['imap_port'], acc.get('imap_ssl', 1))
+    a = _create_mail_account(acc)
     cnt = dict(_UNREAD_CACHE.get(email, {}))
     try:
         a.connect()
@@ -406,8 +490,7 @@ def _run_background_sync(sync_range):
         accounts = storage.list_accounts()
         for acc in accounts:
             _SYNC_STATUS['current_account'] = acc['email']
-            a = MailAccount(acc['email'], acc['password'], acc['imap_host'],
-                            acc['imap_port'], acc.get('imap_ssl', 1))
+            a = _create_mail_account(acc)
             try:
                 a.connect()
                 folders = a.list_folders()
@@ -469,8 +552,7 @@ def _auto_incremental_sync():
             for acc in storage.list_accounts():
                 email = acc['email']
                 try:
-                    a = MailAccount(email, acc['password'], acc['imap_host'],
-                                    acc['imap_port'], acc.get('imap_ssl', 1))
+                    a = _create_mail_account(acc)
                     a.connect()
                     for folder in ['INBOX']:
                         try:
@@ -515,7 +597,7 @@ def list_account_folders(account_email):
     acc = storage.get_account(account_email)
     if not acc:
         return []
-    a = MailAccount(acc['email'], acc['password'], acc['imap_host'], acc['imap_port'], acc.get('imap_ssl', 1))
+    a = _create_mail_account(acc)
     try:
         a.connect()
         folders = a.list_folders()
@@ -534,7 +616,7 @@ def fetch_mail_body(account_email, folder, seq_num):
     acc = storage.get_account(account_email)
     if not acc:
         return None
-    a = MailAccount(acc['email'], acc['password'], acc['imap_host'], acc['imap_port'], acc.get('imap_ssl', 1))
+    a = _create_mail_account(acc)
     try:
         a.connect()
         m = a.fetch_one_folder(folder, seq_num)
@@ -563,7 +645,7 @@ def mark_read(account_email, folder, seq):
     acc = storage.get_account(account_email)
     if not acc:
         return True
-    a = MailAccount(acc['email'], acc['password'], acc['imap_host'], acc['imap_port'], acc.get('imap_ssl', 1))
+    a = _create_mail_account(acc)
     try:
         a.connect()
         try:
@@ -603,7 +685,7 @@ def mark_unread(account_email, folder, seq):
     acc = storage.get_account(account_email)
     if not acc:
         return False
-    a = MailAccount(acc['email'], acc['password'], acc['imap_host'], acc['imap_port'], acc.get('imap_ssl', 1))
+    a = _create_mail_account(acc)
     try:
         a.connect()
         try:
@@ -626,7 +708,7 @@ def toggle_flag(account_email, folder, seq, flag):
     acc = storage.get_account(account_email)
     if not acc:
         return False
-    a = MailAccount(acc['email'], acc['password'], acc['imap_host'], acc['imap_port'], acc.get('imap_ssl', 1))
+    a = _create_mail_account(acc)
     try:
         a.connect()
         try:
@@ -646,7 +728,7 @@ def delete_mail(account_email, folder, seq):
     acc = storage.get_account(account_email)
     if not acc:
         return False
-    a = MailAccount(acc['email'], acc['password'], acc['imap_host'], acc['imap_port'], acc.get('imap_ssl', 1))
+    a = _create_mail_account(acc)
     try:
         a.connect()
         return a.delete_mail(folder, seq)
@@ -766,7 +848,14 @@ def send_email(account_email, to, subject, body_html, cc='', bcc='', attachments
             server = smtplib.SMTP(smtp_host, smtp_port, timeout=30)
         else:
             server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30)
-        server.login(account_email, acc['password'])
+        auth_type = acc.get('auth_type', 'password')
+        if auth_type == 'oauth2':
+            tok_data = _get_valid_oauth_token(acc)
+            access_token = tok_data.get('access_token', acc['password']) if tok_data else acc['password']
+            auth_str = _build_xoauth2_string(account_email, access_token)
+            server.auth('XOAUTH2', lambda: auth_str)
+        else:
+            server.login(account_email, acc['password'])
         server.sendmail(account_email, all_rcpt, msg.as_string())
         server.quit()
 
@@ -886,6 +975,21 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(data)
             else:
                 self._send(404, {'error': 'favicon not found'})
+        elif path == '/api/oauth/ms/auth_url':
+            # 返回微软官方 OAuth 登录重定向地址
+            redirect_uri = qs.get('redirect_uri', [''])[0] or 'https://login.microsoftonline.com/common/oauth2/nativeclient'
+            state = secrets.token_hex(8)
+            params = {
+                'client_id': MS_CLIENT_ID,
+                'response_type': 'code',
+                'redirect_uri': redirect_uri,
+                'response_mode': 'query',
+                'scope': MS_SCOPES,
+                'state': state,
+                'prompt': 'select_account'
+            }
+            auth_url = MS_AUTH_URL + '?' + urllib.parse.urlencode(params)
+            self._send(200, {'auth_url': auth_url, 'client_id': MS_CLIENT_ID, 'redirect_uri': redirect_uri})
         elif path == '/api/settings':
             self._send(200, {
                 'sync_range': int(storage.get_setting('sync_range', '0') or 0),
@@ -941,6 +1045,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/account':
             email = (data.get('email') or '').strip()
             password = data.get('password') or ''
+            auth_type = data.get('auth_type', 'password')
+            oauth_token = data.get('oauth_token', '')
             preset = config.lookup_provider(email)
             imap_host = data.get('imap_host') or (preset[0] if preset else '')
             imap_port = int(data.get('imap_port') or (preset[1] if preset else 993))
@@ -952,12 +1058,12 @@ class Handler(BaseHTTPRequestHandler):
             if not smtp_host and preset:
                 smtp_host = preset[2]
 
-            if not email or not password or not imap_host:
+            if not email or (auth_type != 'oauth2' and not password) or not imap_host:
                 self._send(400, {'error': '请填写邮箱、密码（授权码）、收件服务器和发件服务器'})
                 return
 
             try:
-                a = MailAccount(email, password, imap_host, imap_port, imap_ssl)
+                a = MailAccount(email, password, imap_host, imap_port, imap_ssl, auth_type=auth_type, oauth_token=oauth_token)
                 a.connect()
                 a.logout()
             except Exception as e:
@@ -965,8 +1071,115 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             storage.add_account(email, password, imap_host, imap_port, imap_ssl,
-                                smtp_host, smtp_port, smtp_ssl, display_name)
+                                smtp_host, smtp_port, smtp_ssl, display_name, auth_type=auth_type, oauth_token=oauth_token)
             self._send(200, {'ok': True, 'accounts': _sanitize_accounts(storage.list_accounts())})
+
+        elif path == '/api/oauth/ms/exchange':
+            # 用 authorization code 换取 tokens 并读取用户邮箱地址
+            code = (data.get('code') or '').strip()
+            redirect_uri = (data.get('redirect_uri') or 'https://login.microsoftonline.com/common/oauth2/nativeclient').strip()
+
+            if not code:
+                self._send(400, {'error': '缺少授权码 (code)'})
+                return
+
+            proxy = storage.get_setting('proxy_url', os.environ.get('MAILHUB_PROXY', '')).strip()
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            https_handler = urllib.request.HTTPSHandler(context=ctx)
+            if proxy:
+                proxy_handler = urllib.request.ProxyHandler({'http': proxy, 'https': proxy})
+                opener = urllib.request.build_opener(proxy_handler, https_handler)
+            else:
+                opener = urllib.request.build_opener(https_handler)
+
+            params = {
+                'client_id': MS_CLIENT_ID,
+                'grant_type': 'authorization_code',
+                'code': code,
+                'redirect_uri': redirect_uri,
+                'scope': MS_SCOPES
+            }
+            data_bytes = urllib.parse.urlencode(params).encode('utf-8')
+            req = urllib.request.Request(MS_TOKEN_URL, data=data_bytes, headers={
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'User-Agent': 'MailHub/1.0'
+            })
+
+            try:
+                with opener.open(req, timeout=15) as resp:
+                    tok_data = json.loads(resp.read().decode('utf-8'))
+            except Exception as e:
+                self._send(400, {'error': f'授权码换取 Token 失败: {e}'})
+                return
+
+            access_token = tok_data.get('access_token', '')
+            if not access_token:
+                self._send(400, {'error': '未能获取 access_token: %s' % tok_data})
+                return
+
+            tok_data['expires_at'] = _time.time() + int(tok_data.get('expires_in', 3600))
+
+            # 通过 Microsoft Graph API 读取当前授权用户的邮箱地址
+            user_email = ''
+            user_name = ''
+            try:
+                graph_req = urllib.request.Request('https://graph.microsoft.com/v1.0/me', headers={
+                    'Authorization': f'Bearer {access_token}',
+                    'User-Agent': 'MailHub/1.0'
+                })
+                with opener.open(graph_req, timeout=10) as g_resp:
+                    g_data = json.loads(g_resp.read().decode('utf-8'))
+                    user_email = g_data.get('mail') or g_data.get('userPrincipalName') or ''
+                    user_name = g_data.get('displayName') or ''
+            except Exception:
+                pass
+
+            if not user_email:
+                # 尝试从 id_token 解码
+                id_tok = tok_data.get('id_token', '')
+                if id_tok and '.' in id_tok:
+                    try:
+                        payload_b64 = id_tok.split('.')[1]
+                        # 补齐 base64 padding
+                        payload_b64 += '=' * ((4 - len(payload_b64) % 4) % 4)
+                        id_payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode()).decode())
+                        user_email = id_payload.get('preferred_username') or id_payload.get('email') or ''
+                        user_name = id_payload.get('name') or ''
+                    except Exception:
+                        pass
+
+            if not user_email:
+                self._send(400, {'error': '未能识别 Microsoft 邮箱地址，请在添加页面手动填写'})
+                return
+
+            imap_host = 'outlook.office365.com'
+            imap_port = 993
+            imap_ssl = 1
+            smtp_host = 'smtp.office365.com'
+            smtp_port = 587
+            smtp_ssl = 2
+
+            # 验证 IMAP 连接
+            try:
+                a = MailAccount(user_email, access_token, imap_host, imap_port, imap_ssl, auth_type='oauth2', oauth_token=json.dumps(tok_data))
+                a.connect()
+                a.logout()
+            except Exception as e:
+                self._send(400, {'error': f'IMAP OAuth2 登录测试失败: {e}'})
+                return
+
+            storage.add_account(user_email, access_token, imap_host, imap_port, imap_ssl,
+                                smtp_host, smtp_port, smtp_ssl, user_name or user_email,
+                                auth_type='oauth2', oauth_token=json.dumps(tok_data))
+
+            self._send(200, {
+                'ok': True,
+                'email': user_email,
+                'display_name': user_name,
+                'accounts': _sanitize_accounts(storage.list_accounts())
+            })
 
         elif path == '/api/account/delete':
             email = (data.get('email') or '').strip()
