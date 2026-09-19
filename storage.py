@@ -229,6 +229,22 @@ def load_body(account, folder, seq):
     return None
 
 
+# ---- 应用设置 ----
+
+def get_setting(key, default=''):
+    db = get_db()
+    row = db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+    db.close()
+    return row['value'] if row else default
+
+
+def set_setting(key, value):
+    db = get_db()
+    db.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (key, str(value)))
+    db.commit()
+    db.close()
+
+
 # ---- 未读计数缓存持久化 ----
 
 def save_unread_counts(unread_dict):
@@ -245,14 +261,3 @@ def load_unread_counts():
         return json.loads(raw)
     except Exception:
         return {}
-    db = get_db()
-    row = db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
-    db.close()
-    return row['value'] if row else default
-
-
-def set_setting(key, value):
-    db = get_db()
-    db.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (key, str(value)))
-    db.commit()
-    db.close()
