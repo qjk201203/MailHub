@@ -713,7 +713,7 @@ body.sidebar-collapsed .account-folders-list {
   min-height: 0;
   border: none;
   width: 100%;
-  overflow: hidden;
+  overflow: hidden;   /* 高度由 JS 精确设定，不出现内部滚动条 */
   -webkit-overflow-scrolling: touch;
 }
 .reader-html-wrap iframe {
@@ -721,8 +721,9 @@ body.sidebar-collapsed .account-folders-list {
   width: 100%;
   border: none;
   min-height: 0;
-  transform-origin: 0 0;
-  transition: transform .15s ease-out;
+  overflow: hidden;
+  /* 不再使用 transform / transform-origin：
+     缩放改由 iframe 内部 CSS zoom 实现，避免「画中画」与高度测量失真 */
 }
 .reader-attachments {
   margin-top: 24px;
@@ -1873,7 +1874,8 @@ async function openMail(idx) {
               <button class="zoom-btn" onclick="adjustMailZoom(-10)">－</button>
               <input type="range" class="zoom-slider" id="zoomSlider" min="30" max="150" value="100" step="5" oninput="setMailZoom(this.value)">
               <button class="zoom-btn" onclick="adjustMailZoom(10)">＋</button>
-              <button class="zoom-btn active" id="btnZoomFit" onclick="fitMailContent()">自适应</button>
+              <button class="zoom-btn active" id="btnZoomFit" onclick="setWidthMode('fit')">自适应屏幕</button>
+              <button class="zoom-btn" id="btnZoomActual" onclick="setWidthMode('actual')">原始宽度</button>
               <button class="zoom-btn" onclick="setMailZoom(100)">100%</button>
             </div>
           </div>
@@ -1907,26 +1909,17 @@ async function openMail(idx) {
     if (iframe) {
       iframe.onload = () => {
         try {
-          // 注入移动端视口及强制图片自适应防溢出样式
           const doc = iframe.contentWindow.document;
-          const style = doc.createElement('style');
-          style.textContent = `
-            html, body { margin: 0; padding: 12px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-            img, table, video { max-width: 100% !important; height: auto !important; }
-            pre, code { white-space: pre-wrap !important; word-break: break-word !important; }
-            * { box-sizing: border-box !important; }
-          `;
-          doc.head.appendChild(style);
 
-          // 自动判断宽屏邮件（如信用卡账单/排版表格）并应用自适应缩放
+          // 统一由 applyInnerLayout 注入布局/缩放样式，避免多处注入冲突
           fitMailContent();
 
-          // 图片是异步加载的，加载完高度会变；多次校正避免底部空白
-          const relayout = () => { try { fitMailContent(); } catch (e) {} };
+          // 图片异步加载完毕高度会变，多次校正
+          const relayout = () => { try { applyMailZoom(); } catch (e) {} };
           setTimeout(relayout, 300);
           setTimeout(relayout, 1200);
           setTimeout(relayout, 3000);
-          // 邮件里的图片加载完成后重新量高度
+
           const imgs = doc.images || [];
           for (let i = 0; i < imgs.length; i++) {
             if (!imgs[i].complete) imgs[i].addEventListener('load', relayout);
@@ -1934,7 +1927,12 @@ async function openMail(idx) {
           }
           try {
             if (window.ResizeObserver) {
-              const ro = new ResizeObserver(relayout);
+              let pending = false;
+              const ro = new ResizeObserver(() => {
+                if (pending) return;          // 防止观察自身引发的死循环
+                pending = true;
+                requestAnimationFrame(() => { pending = false; relayout(); });
+              });
               ro.observe(doc.body);
               setTimeout(() => ro.disconnect(), 8000);
             }
@@ -1948,6 +1946,19 @@ async function openMail(idx) {
 }
 
 let curMailZoom = 100;
+
+// 显示模式：'fit' 自适应屏幕宽度 / 'actual' 原始 100% 宽度
+let _widthMode = 'fit';
+function widthMode() { return _widthMode; }
+
+function setWidthMode(mode) {
+  _widthMode = (mode === 'actual') ? 'actual' : 'fit';
+  const bf = document.getElementById('btnZoomFit');
+  const ba = document.getElementById('btnZoomActual');
+  if (bf) bf.classList.toggle('active', _widthMode === 'fit');
+  if (ba) ba.classList.toggle('active', _widthMode === 'actual');
+  fitMailContent();
+}
 
 function toggleZoomBar() {
   const bar = document.getElementById('readerZoomBar');
@@ -1979,35 +1990,111 @@ function applyMailZoom() {
   if (valEl) valEl.textContent = curMailZoom + '%';
   if (!iframe) return;
 
-  const scale = curMailZoom / 100;
-  iframe.style.transform = `scale(${scale})`;
-  iframe.style.width = `${(100 / scale)}%`;
-
-  // 关键：缩放后必须同时压缩外层容器高度。
-  // 否则 iframe 仍占「未缩放时」的高度，缩放省下的空间就变成底部大片空白。
-  resizeFrameToContent(iframe, scale);
+  // 不再用 transform:scale（它在 iframe 上会导致高度测量失真、
+  // 并产生「画中画」观感），改为直接把宽度约束交给 iframe 内部，
+  // 让浏览器原生重排：内容真正按容器宽度自适应，高度也自然准确。
+  applyInnerLayout(iframe, curMailZoom);
 }
 
-// 根据 iframe 实际内容高度 + 缩放比例，算出应有的显示高度
-function resizeFrameToContent(iframe, scale) {
+/**
+ * 在 iframe 内部注入布局样式，使邮件内容服从容器宽度。
+ * zoom 百分比通过 CSS zoom 实现（比 transform 更适配 iframe 且高度可测）。
+ */
+function applyInnerLayout(iframe, zoomPct) {
+  const wrap = document.getElementById('mailHtmlWrap');
+  if (!iframe || !wrap) return;
+  let doc;
+  try {
+    doc = iframe.contentWindow.document;
+  } catch (e) {
+    return;
+  }
+  if (!doc || !doc.head) return;
+
+  const z = Math.max(30, Math.min(150, zoomPct || 100)) / 100;
+
+  let st = doc.getElementById('mh-layout-style');
+  if (!st) {
+    st = doc.createElement('style');
+    st.id = 'mh-layout-style';
+    doc.head.appendChild(st);
+  }
+
+  // 关键三点：
+  // 1) 去掉邮件自身 min-width / 固定宽度，允许收缩
+  // 2) 图片、表格统一最大宽度 100%，防止撑破
+  // 3) 用 CSS zoom 整体缩放（含布局重算），而非 transform（只做视觉缩放）
+  st.textContent = `
+    html, body {
+      margin: 0 !important;
+      padding: 12px !important;
+      width: auto !important;
+      min-width: 0 !important;
+      overflow-x: hidden !important;
+      word-wrap: break-word !important;
+      overflow-wrap: break-word !important;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    /* 邮件里常见的定宽 wrapper，强行放开 */
+    body > *, body table, body div {
+      max-width: 100% !important;
+      min-width: 0 !important;
+    }
+    table {
+      width: auto !important;
+      max-width: 100% !important;
+      table-layout: auto !important;
+    }
+    img, video, svg, canvas {
+      max-width: 100% !important;
+      height: auto !important;
+    }
+    pre, code {
+      white-space: pre-wrap !important;
+      word-break: break-word !important;
+    }
+    * { box-sizing: border-box !important; }
+    /* 用 zoom 做整体缩放：浏览器会连带重算布局，高度可准确测量 */
+    body { zoom: ${z}; }
+  `;
+
+  // 布局稳定后重新量高度；分多次，覆盖图片异步加载
+  const fix = () => syncFrameHeight(iframe);
+  fix();
+  setTimeout(fix, 120);
+  setTimeout(fix, 500);
+  setTimeout(fix, 1500);
+}
+
+/** 把 iframe 高度设置为内容的真实高度（此时没有 transform，测量是准的） */
+function syncFrameHeight(iframe) {
   const wrap = document.getElementById('mailHtmlWrap');
   if (!iframe || !wrap) return;
   try {
     const doc = iframe.contentWindow.document;
-    const inner = doc.body ? doc.body.scrollHeight : 0;
-    const innerDoc = doc.documentElement ? doc.documentElement.scrollHeight : 0;
-    const h = Math.max(inner, innerDoc);
+    if (!doc) return;
+    const b = doc.body;
+    const d = doc.documentElement;
+    const h = Math.max(
+      b ? b.scrollHeight : 0,
+      b ? b.offsetHeight : 0,
+      d ? d.scrollHeight : 0,
+      d ? d.offsetHeight : 0
+    );
     if (h > 0) {
-      // 内容真实高度 × 缩放比例 = 屏幕上实际占用的高度
-      const displayH = Math.ceil(h * scale) + 24;
-      iframe.style.height = displayH + 'px';
-      wrap.style.height = displayH + 'px';
+      const px = Math.ceil(h) + 4;   // 留 4px 余量，避免出现内部滚动条
+      iframe.style.height = px + 'px';
+      wrap.style.height = px + 'px';
     }
   } catch (e) {
-    // 跨域等异常时退回最小高度，不至于留超大空白
-    iframe.style.height = '400px';
+    iframe.style.height = '500px';
     wrap.style.height = 'auto';
   }
+}
+
+/** 兼容旧调用名（其他地方仍在用） */
+function resizeFrameToContent(iframe) {
+  syncFrameHeight(iframe);
 }
 
 function fitMailContent() {
@@ -2017,25 +2104,44 @@ function fitMailContent() {
 
   try {
     const doc = iframe.contentWindow.document;
-    const bodyW = doc.body.scrollWidth || doc.documentElement.scrollWidth;
+    if (!doc || !doc.body) return;
+
+    // 先注入自适应样式（此时 zoom=100%），量出邮件「真实需要的宽度」
+    applyInnerLayout(iframe, 100);
+
     const containerW = wrap.clientWidth || (window.innerWidth - 64);
-    
-    if (bodyW > containerW && containerW > 0) {
-      let ratio = Math.floor((containerW / bodyW) * 100);
-      if (ratio < 40) ratio = 40;
+    // 取所有元素中最宽的，判断邮件是否超出容器
+    let widest = doc.body.scrollWidth || 0;
+    try {
+      const all = doc.body.querySelectorAll('*');
+      for (let i = 0; i < all.length && i < 3000; i++) {
+        const w = all[i].scrollWidth || 0;
+        if (w > widest) widest = w;
+      }
+    } catch (e) {}
+
+    if (widthMode() === 'fit' && widest > containerW && containerW > 0) {
+      // 需要整体缩放：比例如实反映，不再人为限制 40% 下限
+      let ratio = Math.floor((containerW / widest) * 100);
+      if (ratio < 25) ratio = 25;
       if (ratio > 100) ratio = 100;
       curMailZoom = ratio;
     } else {
       curMailZoom = 100;
     }
+
     applyMailZoom();
     const btnFit = document.getElementById('btnZoomFit');
-    if (btnFit) btnFit.classList.add('active');
+    if (btnFit) btnFit.classList.toggle('active', widthMode() === 'fit');
   } catch (e) {
     curMailZoom = 100;
     applyMailZoom();
   }
 }
+
+function closeReader() {
+  document.getElementById('readerPanel').classList.remove('open');
+  curMailIndex = -1;
 
 function closeReader() {
   document.getElementById('readerPanel').classList.remove('open');
