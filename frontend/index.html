@@ -710,16 +710,17 @@ body.sidebar-collapsed .account-folders-list {
   cursor: pointer;
 }
 .reader-html-wrap {
-  min-height: 200px;
+  min-height: 0;
   border: none;
   width: 100%;
-  overflow-x: auto;
+  overflow: hidden;
   -webkit-overflow-scrolling: touch;
 }
 .reader-html-wrap iframe {
+  display: block;
   width: 100%;
   border: none;
-  min-height: 350px;
+  min-height: 0;
   transform-origin: 0 0;
   transition: transform .15s ease-out;
 }
@@ -756,6 +757,12 @@ body.sidebar-collapsed .account-folders-list {
   gap: 12px;
   font-size: 14px;
   transition: background .15s;
+  /* 长邮件时按钮常驻底部，不必翻到页面最下方 */
+  position: sticky;
+  bottom: 0;
+  background: var(--md-surface);
+  box-shadow: 0 -4px 12px rgba(0,0,0,.06);
+  z-index: 5;
 }
 .reader-quick-reply:hover { background: var(--md-hover); color: var(--md-on-surface); }
 
@@ -1479,9 +1486,18 @@ window.addEventListener('DOMContentLoaded', async () => {
   setInterval(loadUnreadCounts, 30000);
 });
 
+// 窗口尺寸变化（手机横竖屏切换 / 拖拽窗口）时，重新计算邮件自适应性
+let _resizeTimer = null;
+window.addEventListener('resize', () => {
+  if (curMailIndex < 0) return;              // 没打开阅读页就不用管
+  clearTimeout(_resizeTimer);
+  _resizeTimer = setTimeout(() => {
+    try { fitMailContent(); } catch (e) {}
+  }, 200);
+});
+
 // 搜索框：清空浏览器自动填充的历史值，避免一打开就被旧搜索词过滤掉全部邮件
-function initSearchBox() {
-  const input = document.getElementById('searchInput');
+function initSearchBox() {  const input = document.getElementById('searchInput');
   if (!input) return;
   const reset = () => {
     if (input.value !== '' && !searchTerm) {
@@ -1904,6 +1920,25 @@ async function openMail(idx) {
 
           // 自动判断宽屏邮件（如信用卡账单/排版表格）并应用自适应缩放
           fitMailContent();
+
+          // 图片是异步加载的，加载完高度会变；多次校正避免底部空白
+          const relayout = () => { try { fitMailContent(); } catch (e) {} };
+          setTimeout(relayout, 300);
+          setTimeout(relayout, 1200);
+          setTimeout(relayout, 3000);
+          // 邮件里的图片加载完成后重新量高度
+          const imgs = doc.images || [];
+          for (let i = 0; i < imgs.length; i++) {
+            if (!imgs[i].complete) imgs[i].addEventListener('load', relayout);
+            imgs[i].addEventListener('error', relayout);
+          }
+          try {
+            if (window.ResizeObserver) {
+              const ro = new ResizeObserver(relayout);
+              ro.observe(doc.body);
+              setTimeout(() => ro.disconnect(), 8000);
+            }
+          } catch (e) {}
         } catch (e) {}
       };
     }
@@ -1947,10 +1982,32 @@ function applyMailZoom() {
   const scale = curMailZoom / 100;
   iframe.style.transform = `scale(${scale})`;
   iframe.style.width = `${(100 / scale)}%`;
+
+  // 关键：缩放后必须同时压缩外层容器高度。
+  // 否则 iframe 仍占「未缩放时」的高度，缩放省下的空间就变成底部大片空白。
+  resizeFrameToContent(iframe, scale);
+}
+
+// 根据 iframe 实际内容高度 + 缩放比例，算出应有的显示高度
+function resizeFrameToContent(iframe, scale) {
+  const wrap = document.getElementById('mailHtmlWrap');
+  if (!iframe || !wrap) return;
   try {
-    const h = iframe.contentWindow.document.body.scrollHeight;
-    iframe.style.height = `${(h + 30)}px`;
-  } catch (e) {}
+    const doc = iframe.contentWindow.document;
+    const inner = doc.body ? doc.body.scrollHeight : 0;
+    const innerDoc = doc.documentElement ? doc.documentElement.scrollHeight : 0;
+    const h = Math.max(inner, innerDoc);
+    if (h > 0) {
+      // 内容真实高度 × 缩放比例 = 屏幕上实际占用的高度
+      const displayH = Math.ceil(h * scale) + 24;
+      iframe.style.height = displayH + 'px';
+      wrap.style.height = displayH + 'px';
+    }
+  } catch (e) {
+    // 跨域等异常时退回最小高度，不至于留超大空白
+    iframe.style.height = '400px';
+    wrap.style.height = 'auto';
+  }
 }
 
 function fitMailContent() {
