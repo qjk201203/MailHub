@@ -1885,16 +1885,32 @@ async function loadAccounts() {
   } catch (e) {}
 }
 
+// 折叠状态持久化到 localStorage
+let _collapsedAccounts = new Set();
+try {
+  const savedCollapsed = localStorage.getItem('mh_collapsed_accounts');
+  if (savedCollapsed) {
+    _collapsedAccounts = new Set(JSON.parse(savedCollapsed));
+  }
+} catch (e) {}
+
+function _saveCollapsedAccounts() {
+  try {
+    localStorage.setItem('mh_collapsed_accounts', JSON.stringify([..._collapsedAccounts]));
+  } catch (e) {}
+}
+
 function renderAccountsTree() {
   const container = document.getElementById('accountsTreeNav');
   if (!container) return;
   container.innerHTML = accounts.map(a => {
     const flds = accountFolders[a.email] || [];
     const isCurAccount = (curAccount === a.email);
+    const isCollapsed = _collapsedAccounts.has(a.email);
 
     return `
-      <div class="account-group" id="group-${escapeHtml(a.email)}">
-        <div class="account-group-header" onclick="toggleAccountGroup('${escapeHtml(a.email)}')">
+      <div class="account-group ${isCollapsed ? 'collapsed' : ''}" id="group-${escapeHtml(a.email)}">
+        <div class="account-group-header ${isCollapsed ? 'collapsed' : ''}" onclick="toggleAccountGroup('${escapeHtml(a.email)}')">
           <div class="av-icon">${(a.display_name || a.email)[0].toUpperCase()}</div>
           <span class="name">${escapeHtml(a.display_name || a.email)}</span>
           <span class="fold-arrow">▼</span>
@@ -1924,7 +1940,17 @@ function renderAccountsTree() {
 
 function toggleAccountGroup(email) {
   const grp = document.getElementById(`group-${email}`);
-  if (grp) grp.classList.toggle('collapsed');
+  if (!grp) return;
+  const isNowCollapsed = grp.classList.toggle('collapsed');
+  const hdr = grp.querySelector('.account-group-header');
+  if (hdr) hdr.classList.toggle('collapsed', isNowCollapsed);
+
+  if (isNowCollapsed) {
+    _collapsedAccounts.add(email);
+  } else {
+    _collapsedAccounts.delete(email);
+  }
+  _saveCollapsedAccounts();
 }
 
 // 缓存最新的未读数据对象
