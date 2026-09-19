@@ -35,9 +35,10 @@ except ImportError:
     import storage
     from imap_client import MailAccount
 
-# 微软公共 Client ID (Thunderbird / MailHub 公共客户端 ID)
-# 允许个人 Microsoft/Outlook/Hotmail 账号一键 OAuth2 登录
-MS_CLIENT_ID = os.environ.get('MAILHUB_MS_CLIENT_ID', '08162f7c-0fd2-4200-a51e-4f6677cf1d4e')
+def _get_ms_client_id():
+    """获取当前生效的 Microsoft Client ID"""
+    return storage.get_setting('ms_client_id', os.environ.get('MAILHUB_MS_CLIENT_ID', '')).strip()
+
 MS_AUTH_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize'
 MS_TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
 MS_SCOPES = 'openid profile offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send'
@@ -62,6 +63,10 @@ def _get_valid_oauth_token(acc):
     if not refresh_token:
         return tok
 
+    client_id = _get_ms_client_id()
+    if not client_id:
+        return tok
+
     proxy = storage.get_setting('proxy_url', os.environ.get('MAILHUB_PROXY', '')).strip()
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
@@ -74,7 +79,7 @@ def _get_valid_oauth_token(acc):
         opener = urllib.request.build_opener(https_handler)
 
     params = {
-        'client_id': MS_CLIENT_ID,
+        'client_id': client_id,
         'grant_type': 'refresh_token',
         'refresh_token': refresh_token,
         'scope': MS_SCOPES
@@ -977,10 +982,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {'error': 'favicon not found'})
         elif path == '/api/oauth/ms/auth_url':
             # 返回微软官方 OAuth 登录重定向地址
+            client_id = _get_ms_client_id()
+            if not client_id:
+                self._send(400, {'error': '请先在下方或设置中填入您在 Azure 注册的应用 Client ID（应用程序 ID）'})
+                return
             redirect_uri = qs.get('redirect_uri', [''])[0] or 'https://login.microsoftonline.com/common/oauth2/nativeclient'
             state = secrets.token_hex(8)
             params = {
-                'client_id': MS_CLIENT_ID,
+                'client_id': client_id,
                 'response_type': 'code',
                 'redirect_uri': redirect_uri,
                 'response_mode': 'query',
@@ -989,11 +998,12 @@ class Handler(BaseHTTPRequestHandler):
                 'prompt': 'select_account'
             }
             auth_url = MS_AUTH_URL + '?' + urllib.parse.urlencode(params)
-            self._send(200, {'auth_url': auth_url, 'client_id': MS_CLIENT_ID, 'redirect_uri': redirect_uri})
+            self._send(200, {'auth_url': auth_url, 'client_id': client_id, 'redirect_uri': redirect_uri})
         elif path == '/api/settings':
             self._send(200, {
                 'sync_range': int(storage.get_setting('sync_range', '0') or 0),
                 'proxy_url': storage.get_setting('proxy_url', os.environ.get('MAILHUB_PROXY', '')),
+                'ms_client_id': _get_ms_client_id(),
                 'sync_status': _SYNC_STATUS,
             })
         elif path == '/api/sync/status':
@@ -1077,10 +1087,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/oauth/ms/exchange':
             # 用 authorization code 换取 tokens 并读取用户邮箱地址
             code = (data.get('code') or '').strip()
+            client_id = (data.get('client_id') or _get_ms_client_id()).strip()
             redirect_uri = (data.get('redirect_uri') or 'https://login.microsoftonline.com/common/oauth2/nativeclient').strip()
 
-            if not code:
-                self._send(400, {'error': '缺少授权码 (code)'})
+            if not code or not client_id:
+                self._send(400, {'error': '缺少授权码 (code) 或 Client ID'})
                 return
 
             proxy = storage.get_setting('proxy_url', os.environ.get('MAILHUB_PROXY', '')).strip()
@@ -1095,7 +1106,7 @@ class Handler(BaseHTTPRequestHandler):
                 opener = urllib.request.build_opener(https_handler)
 
             params = {
-                'client_id': MS_CLIENT_ID,
+                'client_id': client_id,
                 'grant_type': 'authorization_code',
                 'code': code,
                 'redirect_uri': redirect_uri,
@@ -1200,6 +1211,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/settings':
             if 'proxy_url' in data:
                 storage.set_setting('proxy_url', (data.get('proxy_url') or '').strip())
+            if 'ms_client_id' in data:
+                storage.set_setting('ms_client_id', (data.get('ms_client_id') or '').strip())
             sync_range = int(data.get('sync_range') or 0)
             if 'sync_range' in data:
                 storage.set_setting('sync_range', sync_range)
@@ -1208,6 +1221,7 @@ class Handler(BaseHTTPRequestHandler):
                 'ok': True,
                 'sync_range': int(storage.get_setting('sync_range', '0') or 0),
                 'proxy_url': storage.get_setting('proxy_url', ''),
+                'ms_client_id': _get_ms_client_id(),
                 'sync_status': _SYNC_STATUS
             })
 
