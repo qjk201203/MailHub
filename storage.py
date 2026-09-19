@@ -111,14 +111,39 @@ def delete_account(email):
 # ---- 邮件列表缓存（磁盘持久化，用于增量拉取） ----
 
 def save_mail_cache(account, folder, mails):
-    """批量保存某账号某文件夹的邮件头列表到缓存"""
+    """批量保存某账号某文件夹的邮件头列表到缓存。
+
+    注意：不能无脑覆盖——每次从 IMAP 拉回来的 is_read 反映的是服务器端状态，
+    本地刚标记已读、服务器还没同步时，直接覆盖会把「已读」又刷回「未读」。
+    因此此处保留本地已记录的 is_read=True（只增不减）。
+    """
     import json
     db = get_db()
     for m in mails:
-        db.execute('''
-            INSERT OR REPLACE INTO mail_cache (account, folder, seq, data)
-            VALUES (?, ?, ?, ?)
-        ''', (account, folder, str(m.get('uid', '')), json.dumps(m, ensure_ascii=False)))
+        try:
+            seq = str(m.get('uid', ''))
+            if not seq:
+                continue
+            row = db.execute(
+                'SELECT data FROM mail_cache WHERE account=? AND folder=? AND seq=?',
+                (account, folder, seq)).fetchone()
+            if row:
+                try:
+                    old = json.loads(row['data'])
+                    # 本地已读 → 保持已读，不被远端旧状态覆盖
+                    if old.get('is_read') and not m.get('is_read'):
+                        m['is_read'] = True
+                    # 保留旧缓存里的预览文本
+                    if not m.get('preview') and old.get('preview'):
+                        m['preview'] = old['preview']
+                except Exception:
+                    pass
+            db.execute('''
+                INSERT OR REPLACE INTO mail_cache (account, folder, seq, data)
+                VALUES (?, ?, ?, ?)
+            ''', (account, folder, seq, json.dumps(m, ensure_ascii=False)))
+        except Exception:
+            continue
     db.commit()
     db.close()
 

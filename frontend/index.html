@@ -1129,7 +1129,7 @@ body.sidebar-collapsed .account-folders-list {
   <div class="search-container">
     <div class="search-box">
       <svg><use href="#i-search"/></svg>
-      <input id="searchInput" placeholder="搜索主题、发件人、收件人..." oninput="onSearch(this.value)">
+      <input id="searchInput" type="search" name="mailhub_search_noautofill" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="搜索主题、发件人、收件人..." oninput="onSearch(this.value)">
       <button class="clear-btn" onclick="clearSearch()" id="searchClearBtn" style="display:none">✕</button>
     </div>
   </div>
@@ -1470,6 +1470,7 @@ let totalMailCount = 0;
 
 window.addEventListener('DOMContentLoaded', async () => {
   loadStoredPreferences();
+  initSearchBox();          // 清掉浏览器自动填充的搜索历史
   initPasteListener();
   initKeyboardShortcuts();
   await loadAccounts();
@@ -1477,6 +1478,24 @@ window.addEventListener('DOMContentLoaded', async () => {
   loadUnreadCounts();
   setInterval(loadUnreadCounts, 30000);
 });
+
+// 搜索框：清空浏览器自动填充的历史值，避免一打开就被旧搜索词过滤掉全部邮件
+function initSearchBox() {
+  const input = document.getElementById('searchInput');
+  if (!input) return;
+  const reset = () => {
+    if (input.value !== '' && !searchTerm) {
+      input.value = '';
+      const btn = document.getElementById('searchClearBtn');
+      if (btn) btn.style.display = 'none';
+    }
+  };
+  reset();
+  // 浏览器可能异步回填，稍后再兜底清一次
+  setTimeout(reset, 0);
+  setTimeout(reset, 150);
+  window.addEventListener('pageshow', reset);
+}
 
 function loadStoredPreferences() {
   const theme = localStorage.getItem('mh_theme') || 'blue';

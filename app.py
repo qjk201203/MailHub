@@ -514,24 +514,30 @@ def fetch_mail_body(account_email, folder, seq_num):
 
 
 def mark_read(account_email, folder, seq):
+    """标记服务器端为已读，并同步本地缓存。
+
+    关键顺序：先写本地缓存（立即生效、UI 马上变已读），
+    再尽力去同步服务器。这样即使 IMAP 连接慢/失败，
+    本地也不会又变回未读。
+    """
+    storage.update_mail_read_status(account_email, folder, seq, True)
+    _unread_decrement(account_email, folder)
+
     acc = storage.get_account(account_email)
     if not acc:
-        return False
+        return True
     a = MailAccount(acc['email'], acc['password'], acc['imap_host'], acc['imap_port'], acc.get('imap_ssl', 1))
     try:
         a.connect()
         try:
             a.select_folder(folder, readonly=False)
         except Exception:
-            return False
-        typ, data = a.conn.store(str(seq), '+FLAGS', '(\Seen)')
-        if typ != 'OK':
-            return False
-        storage.update_mail_read_status(account_email, folder, seq, True)
-        _unread_decrement(account_email, folder)
+            return True
+        a.conn.store(str(seq), '+FLAGS', '(\Seen)')
         return True
     except Exception:
-        return False
+        # 服务器同步失败也不回滚本地状态，避免界面反复横跳
+        return True
     finally:
         a.logout()
 
