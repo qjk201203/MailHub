@@ -45,7 +45,7 @@ else:
 # ---------- 2) 重复函数 ----------
 names = re.findall(r'^function\s+(\w+)', inner, re.M)
 dups = {n: c for n, c in collections.Counter(names).items() if c > 1}
-KNOWN_OK = {'switchFolder'}
+KNOWN_OK = set()
 bad = {k: v for k, v in dups.items() if k not in KNOWN_OK}
 if bad:
     print(f"❌ 重复函数定义: {bad}"); ok = False

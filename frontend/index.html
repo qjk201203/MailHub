@@ -2345,7 +2345,23 @@ function fitMailContent() {
     const doc = iframe.contentWindow.document;
     if (!doc || !doc.body) return;
 
-    applyInnerLayout(iframe, 100, _detectMailWidth(iframe));
+    // 探测邮件原始排版宽度
+    const mailW = _detectMailWidth(iframe);
+    // 计算缩放比：让邮件等比缩放到容器宽度
+    const containerW = Math.max(240, wrap.clientWidth || (window.innerWidth - 64));
+    let scale = containerW / mailW;
+    if (scale > 1) scale = 1;              // 屏幕比邮件宽时不放大
+    if (scale < 0.25) scale = 0.25;        // 过窄时给下限
+    curMailZoom = Math.round(scale * 100);
+
+    applyInnerLayout(iframe, curMailZoom, mailW);
+
+    // 同步缩放比例显示
+    const valEl = document.getElementById('zoomPercentVal');
+    if (valEl) valEl.textContent = curMailZoom + '%';
+    const slider = document.getElementById('zoomSlider');
+    if (slider) slider.value = curMailZoom;
+
     _refreshWidthModeButtons();
   } catch (e) {
     try { syncFrameHeight(iframe, 1); } catch (e2) {}
@@ -2435,7 +2451,7 @@ function closeComposer() { document.getElementById('composer').classList.remove(
 
 function updateComposerFromOptions() {
   const sel = document.getElementById('composerFrom');
-  sel.innerHTML = accounts.map(a => `<option value="${a.email}">${a.display_name ? a.display_name + ' ' : ''}&lt;${a.email}&gt;</option>`).join('');
+  sel.innerHTML = accounts.map(a => `<option value="${escapeHtml(a.email)}">${escapeHtml(a.display_name ? a.display_name + ' ' : '')}&lt;${escapeHtml(a.email)}&gt;</option>`).join('');
 }
 
 function initPasteListener() {
@@ -2506,15 +2522,6 @@ function escapeHtml(str) {
   return String(str || '').replace(/[&<>"']/g, c => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[c]));
-}
-
-function switchFolder(email, folder, name) {
-  curAccount = email;
-  curFolder = folder;
-  curFolderName = name;
-  if (window.innerWidth < 900) toggleSidebar();
-  renderAccountsTree();
-  loadInbox();
 }
 
 async function openSettings() {
