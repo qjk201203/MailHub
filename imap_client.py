@@ -8,8 +8,10 @@ from email.header import decode_header
 from email.utils import parsedate_to_datetime
 try:
     from . import config
+    from . import storage
 except ImportError:
     import config
+    import storage
 
 CRLF = chr(13) + chr(10)
 
@@ -169,7 +171,6 @@ class MailAccount:
             proxy = os.environ.get('MAILHUB_PROXY', '').strip()
             if not proxy:
                 try:
-                    from . import storage
                     proxy = storage.get_setting('proxy_url', '').strip()
                 except Exception:
                     pass
@@ -201,15 +202,12 @@ class MailAccount:
                 pass
 
         if self.auth_type == 'oauth2':
-            # 动态刷新/获取 Access Token
-            from . import config
+            # 获取 Access Token
             access_token = self.password
-            if not access_token:
+            if not access_token and self.oauth_token:
                 try:
                     import json
-                    from . import app
-                    # 若存储的是 JSON 格式的 Token 结构，解析并尝试刷新
-                    tok = json.loads(self.oauth_token) if self.oauth_token else {}
+                    tok = json.loads(self.oauth_token)
                     access_token = tok.get('access_token', '')
                 except Exception:
                     pass
