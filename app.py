@@ -35,16 +35,61 @@ except ImportError:
     import storage
     from imap_client import MailAccount
 
-# 微软官方为 Mozilla Thunderbird 分配的官方已认证 Public Client ID (经微软认证支持所有个人 consumer 账号)
+# 微软官方 Public Client ID (Thunderbird 官方已认证 ID，支持所有个人/企业账号)
 DEFAULT_MS_CLIENT_ID = '9e5f94bc-e8a4-4e73-b8be-63364c29d753'
 
 def _get_ms_client_id():
     """获取当前生效的 Microsoft Client ID（优先用户自定义，未配置时使用官方认证公共 ID）"""
     return storage.get_setting('ms_client_id', os.environ.get('MAILHUB_MS_CLIENT_ID', DEFAULT_MS_CLIENT_ID)).strip() or DEFAULT_MS_CLIENT_ID
 
-MS_AUTH_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize'
+MS_DEVICE_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/devicecode'
 MS_TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
 MS_SCOPES = 'offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send'
+
+
+def _http_request_json(url, params=None, headers=None, timeout=10):
+    """发起 HTTP 请求并解析 JSON。优先尝试代理，代理异常时无缝降级直连。"""
+    proxy = storage.get_setting('proxy_url', os.environ.get('MAILHUB_PROXY', '')).strip()
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    https_handler = urllib.request.HTTPSHandler(context=ctx)
+
+    hdrs = {'User-Agent': 'MailHub/1.0'}
+    if headers:
+        hdrs.update(headers)
+    data_bytes = None
+    if params is not None:
+        data_bytes = urllib.parse.urlencode(params).encode('utf-8')
+        if 'Content-Type' not in hdrs:
+            hdrs['Content-Type'] = 'application/x-www-form-urlencoded'
+
+    if proxy:
+        try:
+            req = urllib.request.Request(url, data=data_bytes, headers=hdrs)
+            proxy_handler = urllib.request.ProxyHandler({'http': proxy, 'https': proxy})
+            opener = urllib.request.build_opener(proxy_handler, https_handler)
+            with opener.open(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            try:
+                return json.loads(e.read().decode('utf-8', 'ignore'))
+            except Exception:
+                raise
+        except Exception:
+            # 代理不可达，降级直连
+            pass
+
+    req = urllib.request.Request(url, data=data_bytes, headers=hdrs)
+    direct_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), https_handler)
+    try:
+        with direct_opener.open(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        try:
+            return json.loads(e.read().decode('utf-8', 'ignore'))
+        except Exception:
+            raise
 
 
 def _get_valid_oauth_token(acc):
@@ -70,39 +115,22 @@ def _get_valid_oauth_token(acc):
     if not client_id:
         return tok
 
-    proxy = storage.get_setting('proxy_url', os.environ.get('MAILHUB_PROXY', '')).strip()
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    https_handler = urllib.request.HTTPSHandler(context=ctx)
-    if proxy:
-        proxy_handler = urllib.request.ProxyHandler({'http': proxy, 'https': proxy})
-        opener = urllib.request.build_opener(proxy_handler, https_handler)
-    else:
-        opener = urllib.request.build_opener(https_handler)
-
     params = {
         'client_id': client_id,
         'grant_type': 'refresh_token',
         'refresh_token': refresh_token,
         'scope': MS_SCOPES
     }
-    data_bytes = urllib.parse.urlencode(params).encode('utf-8')
-    req = urllib.request.Request(MS_TOKEN_URL, data=data_bytes, headers={
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'MailHub/1.0'
-    })
 
     try:
-        with opener.open(req, timeout=10) as resp:
-            res_data = json.loads(resp.read().decode('utf-8'))
-            if 'access_token' in res_data:
-                tok['access_token'] = res_data['access_token']
-                tok['expires_at'] = _time.time() + int(res_data.get('expires_in', 3600))
-                if 'refresh_token' in res_data:
-                    tok['refresh_token'] = res_data['refresh_token']
-                storage.update_account_oauth_token(acc['email'], json.dumps(tok))
-                return tok
+        res_data = _http_request_json(MS_TOKEN_URL, params=params, timeout=10)
+        if res_data and 'access_token' in res_data:
+            tok['access_token'] = res_data['access_token']
+            tok['expires_at'] = _time.time() + int(res_data.get('expires_in', 3600))
+            if 'refresh_token' in res_data:
+                tok['refresh_token'] = res_data['refresh_token']
+            storage.update_account_oauth_token(acc['email'], json.dumps(tok))
+            return tok
     except Exception:
         pass
     return tok
@@ -983,25 +1011,28 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(data)
             else:
                 self._send(404, {'error': 'favicon not found'})
-        elif path == '/api/oauth/ms/auth_url':
-            # 返回微软官方 OAuth 登录重定向地址
+        elif path == '/api/oauth/ms/device_code':
+            # 申请微软官方 Device Flow 用户授权码
             client_id = _get_ms_client_id()
-            if not client_id:
-                self._send(400, {'error': '请先在下方或设置中填入您在 Azure 注册的应用 Client ID（应用程序 ID）'})
-                return
-            redirect_uri = qs.get('redirect_uri', [''])[0] or 'https://login.microsoftonline.com/common/oauth2/nativeclient'
-            state = secrets.token_hex(8)
             params = {
                 'client_id': client_id,
-                'response_type': 'code',
-                'redirect_uri': redirect_uri,
-                'response_mode': 'query',
-                'scope': MS_SCOPES,
-                'state': state,
-                'prompt': 'select_account'
+                'scope': MS_SCOPES
             }
-            auth_url = MS_AUTH_URL + '?' + urllib.parse.urlencode(params)
-            self._send(200, {'auth_url': auth_url, 'client_id': client_id, 'redirect_uri': redirect_uri})
+            try:
+                dev_data = _http_request_json(MS_DEVICE_URL, params=params, timeout=10)
+                if dev_data and dev_data.get('user_code'):
+                    self._send(200, {
+                        'ok': True,
+                        'user_code': dev_data.get('user_code'),
+                        'device_code': dev_data.get('device_code'),
+                        'verification_uri': dev_data.get('verification_uri') or 'https://login.microsoft.com/device',
+                        'expires_in': dev_data.get('expires_in', 900),
+                        'interval': dev_data.get('interval', 5)
+                    })
+                else:
+                    self._send(400, {'error': dev_data.get('error_description') or dev_data.get('error') or '获取微软授权码失败'})
+            except Exception as e:
+                self._send(400, {'error': '获取微软授权码失败: %s' % e})
         elif path == '/api/settings':
             self._send(200, {
                 'sync_range': int(storage.get_setting('sync_range', '0') or 0),
@@ -1087,85 +1118,83 @@ class Handler(BaseHTTPRequestHandler):
                                 smtp_host, smtp_port, smtp_ssl, display_name, auth_type=auth_type, oauth_token=oauth_token)
             self._send(200, {'ok': True, 'accounts': _sanitize_accounts(storage.list_accounts())})
 
-        elif path == '/api/oauth/ms/exchange':
-            # 用 authorization code 换取 tokens 并读取用户邮箱地址
-            code = (data.get('code') or '').strip()
-            client_id = (data.get('client_id') or _get_ms_client_id()).strip()
-            redirect_uri = (data.get('redirect_uri') or 'https://login.microsoftonline.com/common/oauth2/nativeclient').strip()
+        elif path == '/api/oauth/ms/poll':
+            # 轮询检查用户是否在微软网页端输入了 8 位代码并完成了授权
+            device_code = (data.get('device_code') or '').strip()
+            client_id = _get_ms_client_id()
 
-            if not code or not client_id:
-                self._send(400, {'error': '缺少授权码 (code) 或 Client ID'})
+            if not device_code:
+                self._send(400, {'error': '缺少 device_code'})
                 return
-
-            proxy = storage.get_setting('proxy_url', os.environ.get('MAILHUB_PROXY', '')).strip()
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            https_handler = urllib.request.HTTPSHandler(context=ctx)
-            if proxy:
-                proxy_handler = urllib.request.ProxyHandler({'http': proxy, 'https': proxy})
-                opener = urllib.request.build_opener(proxy_handler, https_handler)
-            else:
-                opener = urllib.request.build_opener(https_handler)
 
             params = {
                 'client_id': client_id,
-                'grant_type': 'authorization_code',
-                'code': code,
-                'redirect_uri': redirect_uri,
-                'scope': MS_SCOPES
+                'grant_type': 'urn:ietf:params:oauth:grant-type:device_code',
+                'device_code': device_code
             }
-            data_bytes = urllib.parse.urlencode(params).encode('utf-8')
-            req = urllib.request.Request(MS_TOKEN_URL, data=data_bytes, headers={
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'User-Agent': 'MailHub/1.0'
-            })
 
             try:
-                with opener.open(req, timeout=15) as resp:
-                    tok_data = json.loads(resp.read().decode('utf-8'))
+                tok_data = _http_request_json(MS_TOKEN_URL, params=params, timeout=10)
             except Exception as e:
-                self._send(400, {'error': f'授权码换取 Token 失败: {e}'})
+                self._send(400, {'error': f'连接微软服务器失败: {e}'})
                 return
+
+            if not tok_data:
+                self._send(400, {'error': '未能接收到微软响应'})
+                return
+
+            err_code = tok_data.get('error')
+            if err_code:
+                if err_code == 'authorization_pending':
+                    # 用户还在手机/网页上输入或确认，继续等待
+                    self._send(200, {'ok': False, 'status': 'pending'})
+                    return
+                elif err_code == 'authorization_declined':
+                    self._send(400, {'error': '用户拒绝了微软授权'})
+                    return
+                elif err_code == 'expired_token':
+                    self._send(400, {'error': '授权码已过期，请重新获取'})
+                    return
+                else:
+                    self._send(400, {'error': tok_data.get('error_description') or err_code})
+                    return
 
             access_token = tok_data.get('access_token', '')
             if not access_token:
-                self._send(400, {'error': '未能获取 access_token: %s' % tok_data})
+                self._send(400, {'error': '未能获取 access_token'})
                 return
 
             tok_data['expires_at'] = _time.time() + int(tok_data.get('expires_in', 3600))
 
-            # 通过 Microsoft Graph API 读取当前授权用户的邮箱地址
+            # 解析邮箱
             user_email = ''
             user_name = ''
-            try:
-                graph_req = urllib.request.Request('https://graph.microsoft.com/v1.0/me', headers={
-                    'Authorization': f'Bearer {access_token}',
-                    'User-Agent': 'MailHub/1.0'
-                })
-                with opener.open(graph_req, timeout=10) as g_resp:
-                    g_data = json.loads(g_resp.read().decode('utf-8'))
-                    user_email = g_data.get('mail') or g_data.get('userPrincipalName') or ''
-                    user_name = g_data.get('displayName') or ''
-            except Exception:
-                pass
+            id_tok = tok_data.get('id_token', '')
+            if id_tok and '.' in id_tok:
+                try:
+                    payload_b64 = id_tok.split('.')[1]
+                    payload_b64 += '=' * ((4 - len(payload_b64) % 4) % 4)
+                    id_payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode()).decode())
+                    user_email = id_payload.get('preferred_username') or id_payload.get('email') or id_payload.get('unique_name') or ''
+                    user_name = id_payload.get('name') or ''
+                except Exception:
+                    pass
 
             if not user_email:
-                # 尝试从 id_token 解码
-                id_tok = tok_data.get('id_token', '')
-                if id_tok and '.' in id_tok:
-                    try:
-                        payload_b64 = id_tok.split('.')[1]
-                        # 补齐 base64 padding
-                        payload_b64 += '=' * ((4 - len(payload_b64) % 4) % 4)
-                        id_payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode()).decode())
-                        user_email = id_payload.get('preferred_username') or id_payload.get('email') or ''
-                        user_name = id_payload.get('name') or ''
-                    except Exception:
-                        pass
+                # 尝试从 Graph API 读取
+                try:
+                    g_data = _http_request_json('https://graph.microsoft.com/v1.0/me', headers={
+                        'Authorization': f'Bearer {access_token}'
+                    }, timeout=10)
+                    if g_data:
+                        user_email = g_data.get('mail') or g_data.get('userPrincipalName') or ''
+                        user_name = g_data.get('displayName') or ''
+                except Exception:
+                    pass
 
             if not user_email:
-                self._send(400, {'error': '未能识别 Microsoft 邮箱地址，请在添加页面手动填写'})
+                # 尝试从 JWT payload 或其他字段提取
+                self._send(400, {'error': '未能自动提取邮箱地址，请重试'})
                 return
 
             imap_host = 'outlook.office365.com'
@@ -1190,6 +1219,7 @@ class Handler(BaseHTTPRequestHandler):
 
             self._send(200, {
                 'ok': True,
+                'status': 'success',
                 'email': user_email,
                 'display_name': user_name,
                 'accounts': _sanitize_accounts(storage.list_accounts())

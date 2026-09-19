@@ -1733,26 +1733,43 @@ body.sidebar-collapsed .account-folders-list {
   </div>
 </div>
 
-<!-- 微软 OAuth2 授权回调接收与验证模态框 -->
+<!-- 微软 OAuth2 设备流（Device Code）授权模态框 -->
 <div class="settings-modal" id="msOAuthModal">
   <div class="settings-dialog" style="max-width:520px">
     <div class="settings-head">
-      <h2>完成 Microsoft 授权</h2>
+      <h2>登录 Microsoft 账号</h2>
       <button class="icon-btn" onclick="closeMsOAuthModal()">✕</button>
     </div>
-    <div class="settings-content">
-      <div style="font-size:13.5px; line-height:1.6; margin-bottom:14px">
-        1. 我们已在新窗口打开微软官方登录授权页；<br>
-        2. 登录并点击“同意授权”后，微软页面将跳转完成；<br>
-        3. 如果未自动完成，请将跳转后的<b>完整网址（URL）</b>或其中的 <b>code=...</b> 代码粘贴到下方：
+    <div class="settings-content" style="text-align:center; padding:10px 0">
+      <div style="font-size:14px; color:var(--md-outline); margin-bottom:16px; line-height:1.5">
+        请在微软官方页面输入以下授权代码完成绑定：
       </div>
-      <div style="margin-bottom:14px">
-        <label style="font-size:13px; color:var(--md-outline); display:block; margin-bottom:4px">粘贴跳转后的完整网址或授权码 (Code)</label>
-        <textarea id="msAuthCodeInput" placeholder="例如：https://login.microsoftonline.com/common/oauth2/nativeclient?code=M.R3_BAY.0..." style="width:100%; height:90px; padding:10px; border:1px solid var(--md-outline-variant); border-radius:8px; font-size:12.5px; box-sizing:border-box; font-family:monospace"></textarea>
+
+      <!-- 授权码展示卡片 -->
+      <div style="background:var(--md-surface-2); border:2px dashed var(--md-primary); border-radius:12px; padding:16px; margin-bottom:16px; display:inline-block; width:85%">
+        <div style="font-size:12px; color:var(--md-outline); margin-bottom:6px">您的微软设备验证码</div>
+        <div id="msUserCodeDisplay" style="font-size:28px; font-weight:800; letter-spacing:4px; color:var(--md-primary); font-family:monospace; user-select:all">
+          --------
+        </div>
       </div>
-      <div style="display:flex; justify-content:flex-end; gap:8px">
-        <button onclick="closeMsOAuthModal()" style="padding:10px 18px; border:none; background:transparent; cursor:pointer">取消</button>
-        <button id="msSubmitBtn" onclick="submitMsOAuthCode()" style="padding:10px 24px; border:none; background:var(--md-primary); color:#fff; border-radius:8px; cursor:pointer; font-weight:600">完成绑定</button>
+
+      <div style="display:flex; justify-content:center; gap:10px; margin-bottom:20px">
+        <button type="button" onclick="copyMsUserCode()" style="padding:10px 18px; border:1px solid var(--md-outline-variant); background:var(--md-surface); color:var(--md-on-surface); border-radius:8px; cursor:pointer; font-weight:600; display:flex; align-items:center; gap:6px">
+          📋 复制验证码
+        </button>
+        <button type="button" id="msOpenPageBtn" onclick="openMsLoginPage()" style="padding:10px 20px; border:none; background:var(--md-primary); color:#fff; border-radius:8px; cursor:pointer; font-weight:600; display:flex; align-items:center; gap:6px; box-shadow:0 2px 6px rgba(0,0,0,0.15)">
+          🔗 打开微软登录页面
+        </button>
+      </div>
+
+      <!-- 动态状态指示器 -->
+      <div style="display:flex; align-items:center; justify-content:center; gap:10px; font-size:13px; color:var(--md-outline); background:var(--md-surface-variant); padding:10px 16px; border-radius:8px">
+        <div class="badge-dot pulse" style="background:#0078d4; width:10px; height:10px"></div>
+        <span id="msPollStatusText">正在等待您在微软页面完成授权（无需手动提交，系统会自动检测完成）...</span>
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; margin-top:20px">
+        <button onclick="closeMsOAuthModal()" style="padding:8px 18px; border:none; background:transparent; cursor:pointer; color:var(--md-outline)">取消</button>
       </div>
     </div>
   </div>
@@ -3263,67 +3280,93 @@ async function openAddAccount() {
 }
 function closeAddAccount() { document.getElementById('addAccountModal').classList.remove('open'); }
 
-let _msOAuthWindow = null;
-let _msRedirectUri = 'https://login.microsoftonline.com/common/oauth2/nativeclient';
+let _msDeviceData = null;
+let _msPollTimer = null;
 
 function closeMsOAuthModal() {
+  if (_msPollTimer) {
+    clearInterval(_msPollTimer);
+    _msPollTimer = null;
+  }
   document.getElementById('msOAuthModal').classList.remove('open');
+}
+
+function copyMsUserCode() {
+  if (!_msDeviceData || !_msDeviceData.user_code) return;
+  navigator.clipboard.writeText(_msDeviceData.user_code).then(() => {
+    alert('已成功复制验证码: ' + _msDeviceData.user_code);
+  }).catch(() => {
+    // 降级复制
+    const ta = document.createElement('textarea');
+    ta.value = _msDeviceData.user_code;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    alert('已复制验证码: ' + _msDeviceData.user_code);
+  });
+}
+
+function openMsLoginPage() {
+  const url = (_msDeviceData && _msDeviceData.verification_uri) || 'https://microsoft.com/devicelogin';
+  window.open(url, '_blank');
 }
 
 async function startMicrosoftOAuth() {
   try {
-    const res = await fetch(`/api/oauth/ms/auth_url?redirect_uri=${encodeURIComponent(_msRedirectUri)}`);
+    const res = await fetch('/api/oauth/ms/device_code');
     const data = await res.json();
-    if (data.auth_url) {
-      document.getElementById('msAuthCodeInput').value = '';
-      document.getElementById('msOAuthModal').classList.add('open');
-      _msOAuthWindow = window.open(data.auth_url, '_blank', 'width=600,height=700');
-    } else {
-      alert(data.error || '获取微软授权地址失败');
+    if (!data.ok || !data.user_code) {
+      alert(data.error || '获取微软授权码失败，请重试');
+      return;
     }
+
+    _msDeviceData = data;
+    document.getElementById('msUserCodeDisplay').textContent = data.user_code;
+    document.getElementById('msPollStatusText').textContent = '正在等待您在微软页面输入代码并授权...';
+    document.getElementById('msOAuthModal').classList.add('open');
+
+    // 尝试将验证码自动写入剪贴板
+    try {
+      navigator.clipboard.writeText(data.user_code);
+    } catch (e) {}
+
+    // 自动打开微软官方设备登录页
+    openMsLoginPage();
+
+    // 开启轮询
+    if (_msPollTimer) clearInterval(_msPollTimer);
+    const intervalSec = Math.max(3, data.interval || 5);
+    _msPollTimer = setInterval(async () => {
+      try {
+        const pollRes = await fetch('/api/oauth/ms/poll', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ device_code: data.device_code })
+        });
+        const pollData = await pollRes.json();
+        if (pollData.ok && pollData.status === 'success') {
+          clearInterval(_msPollTimer);
+          _msPollTimer = null;
+          alert(`🎉 成功绑定 Microsoft 邮箱: ${pollData.email}`);
+          closeMsOAuthModal();
+          closeAddAccount();
+          await loadAccounts();
+          renderSettingsAccounts();
+          switchFolder(pollData.email, 'INBOX', '收件箱');
+        } else if (!pollData.ok && pollData.error) {
+          clearInterval(_msPollTimer);
+          _msPollTimer = null;
+          document.getElementById('msPollStatusText').textContent = '授权终止: ' + pollData.error;
+          alert('绑定未完成: ' + pollData.error);
+        }
+      } catch (err) {
+        // 网络抖动，继续重试轮询
+      }
+    }, intervalSec * 1000);
+
   } catch (e) {
-    alert('请求失败，请检查网络或后端状态');
-  }
-}
-
-async function submitMsOAuthCode() {
-  let raw = document.getElementById('msAuthCodeInput').value.trim();
-  if (!raw) {
-    alert('请粘贴授权后跳转的完整网址或 code');
-    return;
-  }
-  let code = raw;
-  if (raw.includes('code=')) {
-    const m = raw.match(/code=([^&]+)/);
-    if (m) code = decodeURIComponent(m[1]);
-  }
-
-  const btn = document.getElementById('msSubmitBtn');
-  btn.disabled = true;
-  btn.textContent = '正在验证与连接...';
-
-  try {
-    const res = await fetch('/api/oauth/ms/exchange', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ code: code, redirect_uri: _msRedirectUri })
-    });
-    const data = await res.json();
-    if (data.ok) {
-      alert(`🎉 成功绑定 Microsoft 邮箱: ${data.email}`);
-      closeMsOAuthModal();
-      closeAddAccount();
-      await loadAccounts();
-      renderSettingsAccounts();
-      switchFolder(data.email, 'INBOX', '收件箱');
-    } else {
-      alert('绑定失败: ' + (data.error || '未知错误'));
-    }
-  } catch (e) {
-    alert('请求异常: ' + e.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '完成绑定';
+    alert('请求失败，请检查网络连接: ' + e.message);
   }
 }
 
