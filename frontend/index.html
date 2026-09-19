@@ -3339,10 +3339,12 @@ async function startMicrosoftOAuth() {
     const intervalSec = Math.max(3, data.interval || 5);
     _msPollTimer = setInterval(async () => {
       try {
+        const emailInput = document.getElementById('addEmail');
+        const hintEmail = (emailInput ? emailInput.value.trim() : '');
         const pollRes = await fetch('/api/oauth/ms/poll', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ device_code: data.device_code })
+          body: JSON.stringify({ device_code: data.device_code, hint_email: hintEmail })
         });
         const pollData = await pollRes.json();
         if (pollData.ok && pollData.status === 'success') {

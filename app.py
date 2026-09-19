@@ -44,7 +44,22 @@ def _get_ms_client_id():
 
 MS_DEVICE_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/devicecode'
 MS_TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
-MS_SCOPES = 'offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send'
+MS_SCOPES = 'openid profile email offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send'
+
+
+def _decode_jwt_payload(jwt_str):
+    """解码 JWT token payload（无需依赖第三方库）"""
+    if not jwt_str or '.' not in jwt_str:
+        return {}
+    try:
+        parts = jwt_str.split('.')
+        if len(parts) < 2:
+            return {}
+        payload_b64 = parts[1]
+        payload_b64 += '=' * ((4 - len(payload_b64) % 4) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload_b64.encode('utf-8')).decode('utf-8', 'ignore'))
+    except Exception:
+        return {}
 
 
 def _http_request_json(url, params=None, headers=None, timeout=10):
@@ -1166,35 +1181,56 @@ class Handler(BaseHTTPRequestHandler):
 
             tok_data['expires_at'] = _time.time() + int(tok_data.get('expires_in', 3600))
 
-            # 解析邮箱
+            # 优先从 id_token 与 access_token 解码用户信息
             user_email = ''
             user_name = ''
-            id_tok = tok_data.get('id_token', '')
-            if id_tok and '.' in id_tok:
+
+            # 1. 尝试从 id_token 解码
+            id_payload = _decode_jwt_payload(tok_data.get('id_token', ''))
+            if id_payload:
+                user_email = (id_payload.get('preferred_username') or id_payload.get('email') or
+                              id_payload.get('upn') or id_payload.get('unique_name') or '')
+                user_name = id_payload.get('name') or ''
+
+            # 2. 尝试从 access_token 解码
+            if not user_email:
+                acc_payload = _decode_jwt_payload(access_token)
+                if acc_payload:
+                    user_email = (acc_payload.get('upn') or acc_payload.get('unique_name') or
+                                  acc_payload.get('email') or acc_payload.get('preferred_username') or '')
+                    user_name = user_name or acc_payload.get('name') or ''
+
+            # 3. 尝试从 Outlook REST API 读取个人信息
+            if not user_email:
                 try:
-                    payload_b64 = id_tok.split('.')[1]
-                    payload_b64 += '=' * ((4 - len(payload_b64) % 4) % 4)
-                    id_payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode()).decode())
-                    user_email = id_payload.get('preferred_username') or id_payload.get('email') or id_payload.get('unique_name') or ''
-                    user_name = id_payload.get('name') or ''
+                    out_data = _http_request_json('https://outlook.office.com/api/v2.0/me', headers={
+                        'Authorization': f'Bearer {access_token}'
+                    }, timeout=10)
+                    if out_data:
+                        user_email = out_data.get('EmailAddress') or out_data.get('Id') or ''
+                        user_name = user_name or out_data.get('DisplayName') or ''
                 except Exception:
                     pass
 
+            # 4. 尝试从 Graph API 读取
             if not user_email:
-                # 尝试从 Graph API 读取
                 try:
                     g_data = _http_request_json('https://graph.microsoft.com/v1.0/me', headers={
                         'Authorization': f'Bearer {access_token}'
                     }, timeout=10)
                     if g_data:
                         user_email = g_data.get('mail') or g_data.get('userPrincipalName') or ''
-                        user_name = g_data.get('displayName') or ''
+                        user_name = user_name or g_data.get('displayName') or ''
                 except Exception:
                     pass
 
+            # 5. 如果仍未能自动提取，允许前端通过 hint 传入或者 fallback
+            hint_email = (data.get('hint_email') or '').strip()
+            if not user_email and hint_email:
+                user_email = hint_email
+
             if not user_email:
-                # 尝试从 JWT payload 或其他字段提取
-                self._send(400, {'error': '未能自动提取邮箱地址，请重试'})
+                self._send(400, {'error': '未能自动提取邮箱地址，请重试或在设置中指定'})
                 return
 
             imap_host = 'outlook.office365.com'
